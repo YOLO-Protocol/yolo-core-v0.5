@@ -1,66 +1,24 @@
-## Foundry
+# YOLO Protocol V0
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+This repository contains the core smart contracts for Yolo Protocol V0.
 
-Foundry consists of:
+## 🚀 Project Introduction
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+Yolo Protocol V0 is an extension and continuous building of our Hackhathon Project: 
+[Hackathon Devfolio](https://devfolio.co/projects/yolo-protocol-univ-hook-b899):
+[Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook):
 
-## Documentation
+We are currently part of the [Uniswap V4 Hook Incubator - Cohort UHI5](https://atrium.academy/uniswap), where we are evolving the protocol beyond its MVP into a production-ready modular DeFi infrastructure.
 
-https://book.getfoundry.sh/
+## 🤨 What is YOLO Protocol?
 
-## Usage
+YOLO Protocol can be understood as a modular DeFi engine that combines functionalities traditionally offered by multiple protocols — all under the hood of a single Uniswap V4 Hook:
 
-### Build
+    - 🏦 MakerDAO/Abracadabra-like
+      - An overcollateralized stablecoin backed by yield-bearing tokens(YBTs)
+  
+    - ⚖️ Synthetix-style
+      - Synthetic asset(currencies, shares, commodities) minting & swapping within Uniswap itself, without the need of any prior liquidity
 
-```shell
-$ forge build
-```
-
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+    - ⚙️ Gearbox-style
+      - Leverage & Credit Account Systems
