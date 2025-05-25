@@ -15,10 +15,10 @@ We are currently part of the [Uniswap V4 Hook Incubator - Cohort UHI5](https://a
 YOLO Protocol can be understood as a modular DeFi engine that combines functionalities traditionally offered by multiple protocols — all under the hood of a single Uniswap V4 Hook:
 
     - 🏦 MakerDAO/Abracadabra-like
-      - An overcollateralized stablecoin backed by yield-bearing tokens(YBTs)
+      - An overcollateralized stablecoin YOLO USD (USY) backed by yield-bearing tokens(YBTs)
   
     - ⚖️ Synthetix-style
       - Synthetic asset(currencies, shares, commodities) minting & swapping within Uniswap itself, without the need of any prior liquidity
 
     - ⚙️ Gearbox-style
-      - Leverage & Credit Account Systems
+      - Execute permissionless leverage of up to 20x on YBT positions (PT-sUSDe vs USY) with low liquidation risk
