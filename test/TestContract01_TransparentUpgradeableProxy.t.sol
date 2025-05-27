@@ -290,4 +290,13 @@ contract TestContract01_TransparentUpgradeableProxy is Test {
         assertEq(complexProxyAsV1.count(), 1);
         assertEq(complexProxy.version(), "v1");
     }
+
+    /**
+     * @dev Make sure admin cannot call implementation functions directly
+     */
+    function test_Contract01_Case13_adminBlockedFromImplementation() public {
+        vm.prank(address(proxyAdmin));
+        vm.expectRevert(); // should fail due to TransparentProxy restriction
+        CounterV1(address(proxy)).increment();
+    }
 }
