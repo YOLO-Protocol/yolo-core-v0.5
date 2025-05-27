@@ -8,12 +8,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 /**
  * @title   MockERC20
  * @author  0xyolodev.eth
- * @dev     ERC20 Token with mint and burn capabilities, for testing purposes.
+ * @notice  ERC20 Token with mint and burn capabilities, for testing purposes.
  * @dev     WARNING: NOT FOR PRODUCTION USE.
  */
 contract MockERC20 is ERC20, ERC20Burnable, Ownable {
-    constructor(string memory name, string memory symbol, uint256 initialSupply)
-        ERC20(name, symbol)
+    constructor(string memory _name, string memory _symbol, uint256 initialSupply)
+        ERC20(_name, _symbol)
         Ownable(msg.sender)
     {
         _mint(msg.sender, initialSupply);
