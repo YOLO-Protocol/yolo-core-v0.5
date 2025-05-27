@@ -9,6 +9,12 @@ import {MockWETH} from "@yolo/contracts/mocks/MockWETH.sol";
 import {MockPriceOracle} from "@yolo/contracts/mocks/MockPriceOracle.sol";
 import {IWETH} from "@yolo/contracts/interfaces/IWETH.sol";
 
+/**
+ * @title   Base02_DeployMockAssetsAndOracles
+ * @author  0xyolodev.eth
+ * @dev     This contract serves as the best contract for deploying mock assets and oracles
+ *          in a testing environment.
+ */
 contract Base02_DeployMockAssetsAndOracles is Test, Config01_OraclesAndAssets {
     IWETH public weth;
 
