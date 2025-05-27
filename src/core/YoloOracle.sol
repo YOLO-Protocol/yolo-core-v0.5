@@ -32,11 +32,11 @@ contract YoloOracle is Ownable {
     // *****************//
     // *** ERRORS *** //
     // **************** //
-    error ParamsLengthMismatch();
-    error PriceSourceCannotBeZero();
-    error CallerNotOwnerOrHook();
-    error AnchorAlreadySet();
-    error UnsupportedAsset();
+    error YoloOracle__ParamsLengthMismatch();
+    error YoloOracle__PriceSourceCannotBeZero();
+    error YoloOracle__CallerNotOwnerOrHook();
+    error YoloOracle__AnchorAlreadySet();
+    error YoloOracle__UnsupportedAsset();
 
     // *****************//
     // *** MODIFIER *** //
