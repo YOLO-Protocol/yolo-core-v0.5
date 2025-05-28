@@ -89,8 +89,11 @@ contract YoloHook is BaseHook, Ownable {
     address public treasury; // Address of the treasury to collect fees
     IWETH public weth;
     IYoloOracle public yoloOracle;
-    uint256 public hookSwapFee;
-    uint256 public flashLoanFee;
+
+    /*----- Fees Configuration -----*/
+    uint256 public stableSwapFee; // Swap fee for the anchor pool, in basis points (e.g., 100 = 1%)
+    uint256 public syntheticSwapFee; // Swap fee for synthetic assets, in basis points (e.g., 100 = 1%)
+    uint256 public flashLoanFee; // Flash loan fee for synthetic assets, in basis points (e.g., 100 = 1%)
 
     /*----- Anchor Pool -----*/
     IYoloSyntheticAsset public anchor;
@@ -124,12 +127,21 @@ contract YoloHook is BaseHook, Ownable {
 
     /**
      * @notice  Functions as the actual constructor for the hook, complying with proxy patterns.
+     * @dev     This function is called only once, during the deployment of the hook.
+     * @param   _wethAddress        Address of the WETH contract.
+     * @param   _treasury           Address of the treasury to collect fees.
+     * @param   _yoloOracle         Address of the Yolo Oracle contract.
+     * @param   _stableSwapFee      Swap fee for the anchor pool, in basis points (e.g., 100 = 1%).
+     * @param   _syntheticSwapFee   Swap fee for the hook, in basis points (e.g., 100 = 1%).
+     * @param   _flashLoanFee       Flash loan fee for the hook, in basis points (e.g., 100 = 1%).
+     * @param   _usdc               Address of the USDC contract, used in the anchor pool.
      */
     function initialize(
         address _wethAddress,
         address _treasury,
         address _yoloOracle,
-        uint256 _hookSwapFee,
+        uint256 _stableSwapFee,
+        uint256 _syntheticSwapFee,
         uint256 _flashLoanFee,
         address _usdc
     ) external onlyOwner {
@@ -141,7 +153,8 @@ contract YoloHook is BaseHook, Ownable {
         weth = IWETH(_wethAddress);
         treasury = _treasury;
         yoloOracle = IYoloOracle(_yoloOracle);
-        hookSwapFee = _hookSwapFee;
+        stableSwapFee = _stableSwapFee;
+        syntheticSwapFee = _syntheticSwapFee;
         flashLoanFee = _flashLoanFee;
         usdc = _usdc;
 
