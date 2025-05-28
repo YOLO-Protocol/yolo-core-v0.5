@@ -136,7 +136,8 @@ contract Base02_DeployMockAssetsAndOracles is Test, Config01_OraclesAndAssets {
     /**
      * @notice  Added to allow the contract to receive ETH, which is necessary for WETH withdrawals.
      */
-    receive() external payable virtual {}
+    // Commented out to avoid conflicts with Uniswap V4's deployers utils
+    // receive() external payable virtual {}
 
     /**
      * @notice  Added to allow the contract to receive ETH, which is necessary for WETH withdrawals.
