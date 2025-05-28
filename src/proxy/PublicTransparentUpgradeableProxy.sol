@@ -13,13 +13,13 @@ import {IVersionized} from "@yolo/contracts/interfaces/Iversionized.sol";
  */
 contract PublicTransparentUpgradeableProxy is TransparentUpgradeableProxy {
     /**
-     * @dev Constructor that initializes the proxy with the implementation address, admin address, and initialization data.
-     * @param _logic The address of the initial implementation contract.
-     * @param _admin The address of the proxy admin.
-     * @param _data Initialization data to be passed to the implementation contract.
+     * @dev     Constructor that initializes the proxy with the implementation address, admin address, and initialization data.
+     * @param   _logic                      The address of the initial implementation contract.
+     * @param   _initialProxyAdminOwner     The address of the initial proxy admin owner. This address will be the owner of the ProxyAdmin contract.
+     * @param   _data                       Initialization data to be passed to the implementation contract.
      */
-    constructor(address _logic, address _admin, bytes memory _data)
-        TransparentUpgradeableProxy(_logic, _admin, _data)
+    constructor(address _logic, address _initialProxyAdminOwner, bytes memory _data)
+        TransparentUpgradeableProxy(_logic, _initialProxyAdminOwner, _data)
     {}
 
     function implementation() public view returns (address) {
