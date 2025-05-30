@@ -47,12 +47,28 @@ contract YoloHook is BaseHook, Ownable {
     // *** DATATYPES *** //
     // ***************** //
 
-    struct AddLiquidityCallBackData {
-        uint8 action; // 0 = Add Liquidity
+    /**
+     * @notice  Callback data structure for the hook to handle different actions
+     */
+    struct CallbackData {
+        uint8 action; // 0 = Add Liquidity, 1 = Remove Liquidity
+        bytes data;
+    }
+
+    struct AddLiquidityCallbackData {
         address sender; // User who add liquidity
-        uint256 maxUsdcAmount; // Max USDC amount to add
-        uint256 maxUsyAmount; // Max USY amount to add
-        uint256 minLiquidity; // Minimum LP tokens to receive
+        address receiver; // User receive the LP tokens
+        uint256 usdcUsed;
+        uint256 usyUsed;
+        uint256 liquidity; // LP tokens minted
+    }
+
+    struct RemoveLiquidityCallbackData {
+        address initiator; // User who remove liquidity
+        address receiver; // User receive the USDC and USY
+        uint256 usdcAmount;
+        uint256 usyAmount;
+        uint256 liquidity; // LP tokens burnt
     }
 
     struct YoloAssetConfiguration {
@@ -139,14 +155,18 @@ contract YoloHook is BaseHook, Ownable {
     // *** EVENTS *** //
     // ************** //
 
-    event AnchorLiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity);
-
     /**
-     * @notice  Emitted when liquidity is added on the hook. Complies with Uniswap V4 best practice guidance.
+     * @notice  Emitted when liquidity is added or removed from the hook. Complies with Uniswap V4 best practice guidance.
      */
     event HookModifyLiquidity(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1);
 
-    event AnchorLiquidityRemoved(address indexed provider, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity);
+    event AnchorLiquidityAdded(
+        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity
+    );
+
+    event AnchorLiquidityRemoved(
+        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity
+    );
 
     event AnchorSwapExecuted(address indexed sender, bool usdcForUSY, uint256 amountIn, uint256 amountOut, uint256 fee);
 
@@ -243,50 +263,25 @@ contract YoloHook is BaseHook, Ownable {
     // ******************************//
     // *** ANCHOR POOL FUNCTIONS *** //
     // ***************************** //
-
-    // ******************************//
-    // *** ANCHOR POOL FUNCTIONS *** //
-    // ***************************** //
     /**
      * @notice  Add liquidity to the anchor pool pair (USDC/USY) with ratio enforcement
      * @param   _maxUsdcAmount Maximum USDC amount user wants to add
      * @param   _maxUsyAmount Maximum USY amount user wants to add
      * @param   _minLiquidityReceive Minimum LP tokens to receive
      */
-    function addLiquidity(uint256 _maxUsdcAmount, uint256 _maxUsyAmount, uint256 _minLiquidityReceive)
+    function addLiquidity(
+        uint256 _maxUsdcAmount,
+        uint256 _maxUsyAmount,
+        uint256 _minLiquidityReceive,
+        address _receiver
+    )
         external
-        returns (uint256 usdcUsed, uint256 usyUsed, uint256 liquidityMinted)
+        returns (uint256 actualUsdcUsed, uint256 actualUsyUsed, uint256 actualLiquidityMinted, address actualReceiver)
     {
         // Guard clause: ensure that the amounts are greater than zero
         if (_maxUsdcAmount == 0 || _maxUsyAmount == 0) revert YoloHook_InvalidAddLiuidityParams();
-
-        // Call the PoolManater to unlock with AddLiquidityCallBackData
-        bytes memory data = poolManager.unlock(
-            abi.encode(AddLiquidityCallBackData(0, msg.sender, _maxUsdcAmount, _maxUsyAmount, _minLiquidityReceive))
-        );
-
-        // Decode the callback data to get the actual amounts used and liquidity minted
-        (address sender, usdcUsed, usyUsed, liquidityMinted) = abi.decode(data, (address, uint256, uint256, uint256));
-
-        // Emit Hook Event
-        emit HookModifyLiquidity(
-            anchorPoolId,
-            sender,
-            int128(int256(usdcUsed)), // Convert to int128 for PoolManager
-            int128(int256(usyUsed)) // Convert to int128 for PoolManager
-        );
-
-        return (usdcUsed, usyUsed, liquidityMinted);
-    }
-
-    function unlockCallback(bytes calldata _callbackData) external onlyPoolManager returns (bytes memory) {
-        // Decode the callback data
-        AddLiquidityCallBackData memory data = abi.decode(_callbackData, (AddLiquidityCallBackData));
-
-        address sender = data.sender;
-        uint256 maxUsdcAmountInWad = _toWadUSDC(data.maxUsdcAmount); // Convert raw USDC to WAD (18 decimals)
-        uint256 maxUsyAmountInWad = data.maxUsyAmount; // USY is already in 18 decimals
-        uint256 minLiquidity = data.minLiquidity; // Minimum LP tokens to receive
+        uint256 maxUsdcAmountInWad = _toWadUSDC(_maxUsdcAmount); // Convert raw USDC to WAD (18 decimals)
+        uint256 maxUsyAmountInWad = _maxUsyAmount; // USY is already in 18 decimals
 
         uint256 usdcUsed;
         uint256 usdcUsedInWad;
@@ -295,7 +290,7 @@ contract YoloHook is BaseHook, Ownable {
         uint256 liquidity;
 
         if (anchorPoolLiquiditySupply == 0) {
-            // If first time adding liquidity, ensure that the liquidity ratio is 1:1
+            // CASE A: If first time adding liquidity, ensure that the liquidity ratio is 1:1
 
             // Check and use the smaller of the two amounts
             usdcUsedInWad = maxUsdcAmountInWad > maxUsyAmountInWad ? maxUsyAmountInWad : maxUsdcAmountInWad; // Use the smaller of the two amounts
@@ -304,20 +299,16 @@ contract YoloHook is BaseHook, Ownable {
             // Calculate liquidity using the square root formula
             liquidity = _sqrt(usdcUsedInWad * usyUsedInWad) - MINIMUM_LIQUIDITY; // Calculate liquidity
 
-            // Ensure that the liquidity is above the minimum threshold
-            if (liquidity < minLiquidity) revert YoloHook__InsufficientLiquidityMinted();
+            // Ensure that the liquidity is above the minimum requirement
+            if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
 
-            // Update the anchor pool state
-            anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY; // Update the total supply of LP tokens
-            // totalAnchorReserveUSDC += _fromWadUSDC(usdcUsedInWad); // Update USDC reserve
-            // totalAnchorReserveUSY += usyUsedInWad; // Update USY reserve
+            // anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY; // Update the total supply of LP tokens
+            // anchorPoolLPBalance[address(0)] += MINIMUM_LIQUIDITY; // Assign the minimum liquidity to a dummy address (0) for first time liquidity provision
 
             usdcUsed = _fromWadUSDC(usdcUsedInWad); // Convert WAD USDC back to raw USDC
             usyUsed = usyUsedInWad; // USY is already in raw format
-
-            anchorPoolLPBalance[address(0)] += MINIMUM_LIQUIDITY; // Assign the minimum liquidity to a dummy address (0) for first time liquidity provision
         } else {
-            // If not first time, ensure that the liquidity used is optimal according to the proportions
+            // CASE B: If not first time, ensure that the liquidity used is optimal according to the proportions
             uint256 totalReserveUsdcInWad = _toWadUSDC(totalAnchorReserveUSDC);
             uint256 totalReserveUsyInWad = totalAnchorReserveUSY;
 
@@ -329,14 +320,12 @@ contract YoloHook is BaseHook, Ownable {
 
             if (usdcRequiredInWad <= maxUsdcAmountInWad) {
                 // USY is the limiting factor
-                // usdcUsed = _fromWadUSDC(usdcRequiredInWad);
                 usdcUsed = (usdcRequiredInWad + USDC_SCALE_UP - 1) / USDC_SCALE_UP; // Round up to ensure we use enough USDC
                 usyUsed = maxUsyAmountInWad; // Use the full USY amount
             } else {
                 // USDC is the limiting factor
                 // usdcUsed = _fromWadUSDC(maxUsdcAmountInWad); // Use the full USDC amount
                 usdcUsed = (maxUsdcAmountInWad + USDC_SCALE_UP - 1) / USDC_SCALE_UP;
-
                 usyUsed = usyRequiredInWad; // Use the required USY amount
             }
 
@@ -346,169 +335,131 @@ contract YoloHook is BaseHook, Ownable {
             liquidity = lp0 < lp1 ? lp0 : lp1; // Use the minimum of the two calculations
 
             // Ensure that the liquidity is above the minimum threshold
-            if (liquidity < minLiquidity) revert YoloHook__InsufficientLiquidityMinted();
+            if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
+
             // Update the anchor pool state
-            anchorPoolLiquiditySupply += liquidity; // Update the total supply of LP tokens
+            // anchorPoolLiquiditySupply += liquidity; // Update the total supply of LP tokens
         }
 
-        // Pull tokens from user and update hook's claims
-        Currency cUSDC = Currency.wrap(usdc);
-        Currency cUSY = Currency.wrap(address(anchor));
+        // Call the PoolManager to unlock and execute accounting settlement
+        bytes memory data = poolManager.unlock(
+            abi.encode(
+                CallbackData(
+                    0, abi.encode(AddLiquidityCallbackData(msg.sender, _receiver, usdcUsed, usyUsed, liquidity))
+                )
+            )
+        );
 
-        // Settle = user pays tokens to PoolManager
-        cUSDC.settle(poolManager, sender, usdcUsed, false);
-        cUSY.settle(poolManager, sender, usyUsed, false);
+        // Decode the callback data to get the actual amounts used and liquidity minted
+        (
+            address sender,
+            address receiver,
+            uint256 _actualUsdcUsed,
+            uint256 _actualUsyUsed,
+            uint256 _actualLiquidityMinted
+        ) = abi.decode(data, (address, address, uint256, uint256, uint256));
 
-        // Take = hook claims the tokens from PoolManager
-        cUSDC.take(poolManager, address(this), usdcUsed, true);
-        cUSY.take(poolManager, address(this), usyUsed, true);
+        // Emit Hook Event
+        emit HookModifyLiquidity(
+            anchorPoolId,
+            receiver,
+            int128(int256(_actualUsdcUsed)), // Convert to int128 for PoolManager
+            int128(int256(_actualUsyUsed)) // Convert to int128 for PoolManager
+        );
 
-        // Update state
-        totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
-        totalAnchorReserveUSY += usyUsed; // USY (18-dec)
-        anchorPoolLPBalance[sender] += liquidity;
-
-        // Emit event
-        emit AnchorLiquidityAdded(sender, usdcUsed, usyUsed, liquidity);
-
-        return abi.encode(sender, usdcUsed, usyUsed, liquidity);
+        return (_actualUsdcUsed, _actualUsyUsed, _actualLiquidityMinted, receiver);
     }
 
-    /**
-     * @notice  Add liquidity to the anchor pool pair (USDC/USY) with ratio enforcement
-     * @param   _usdcAmount Maximum USDC amount user wants to add
-     * @param   _usyAmount Maximum USY amount user wants to add
-     * @param   _minLiquidity Minimum LP tokens to receive
-     */
-    function addAnchorLiquidity(uint256 _usdcAmount, uint256 _usyAmount, uint256 _minLiquidity)
-        external
-        returns (uint256 liquidity, uint256 usdcUsed, uint256 usyUsed)
-    {
-        // Guard clause: ensure that the amounts are greater than zero
-        if (_usdcAmount == 0 || _usyAmount == 0) revert YoloHook_InvalidAddLiuidityParams();
+    function unlockCallback(bytes calldata _callbackData) external onlyPoolManager returns (bytes memory) {
+        CallbackData memory callbackData = abi.decode(_callbackData, (CallbackData));
+        uint8 action = callbackData.action;
 
-        uint256 wadResUsdc = _toWadUSDC(totalAnchorReserveUSDC); // 18-dec view
-        uint256 wadResUsy = totalAnchorReserveUSY; // already 18-dec
+        if (action == 0) {
+            // CASE A: Add Liquidity
+            AddLiquidityCallbackData memory data = abi.decode(callbackData.data, (AddLiquidityCallbackData));
+            address sender = data.sender;
+            address receiver = data.receiver; // Receiver of LP tokens, not used in this hook
+            uint256 usdcUsed = data.usdcUsed; // USDC used in raw format
+            uint256 usyUsed = data.usyUsed; // USY used in raw format
+            uint256 liquidity = data.liquidity; // LP tokens minted
 
-        if (anchorPoolLiquiditySupply == 0) {
-            usdcUsed = _usdcAmount; // raw (6-dec)
-            usyUsed = _usyAmount; // raw (18-dec)
-            liquidity = _sqrt(_toWadUSDC(usdcUsed) * usyUsed) - MINIMUM_LIQUIDITY;
-            anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY;
-        } else {
-            // round-up helpers
-            uint256 usdcReq = (_usyAmount * wadResUsdc + wadResUsy - 1) / wadResUsy;
-            uint256 usyReq = (_usdcAmount * wadResUsy + wadResUsdc - 1) / wadResUsdc;
+            // Pull tokens from user and update hook's claims
+            Currency cUSDC = Currency.wrap(usdc);
+            Currency cUSY = Currency.wrap(address(anchor));
 
-            if (usdcReq <= _usdcAmount) {
-                // USY limited
-                usdcUsed = usdcReq;
-                usyUsed = _usyAmount;
+            // Settle = user pays tokens to PoolManager
+            cUSDC.settle(poolManager, sender, usdcUsed, false);
+            cUSY.settle(poolManager, sender, usyUsed, false);
+
+            // Take = hook claims the tokens from PoolManager
+            cUSDC.take(poolManager, address(this), usdcUsed, true);
+            cUSY.take(poolManager, address(this), usyUsed, true);
+
+            // Update state
+            totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
+            totalAnchorReserveUSY += usyUsed; // USY (18-dec)
+
+            if (anchorPoolLiquiditySupply == 0) {
+                anchorPoolLPBalance[address(0)] += MINIMUM_LIQUIDITY;
+                anchorPoolLPBalance[receiver] += liquidity;
+                anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY; // Set initial liquidity supply
             } else {
-                usdcUsed = _usdcAmount;
-                usyUsed = usyReq;
+                anchorPoolLPBalance[receiver] += liquidity;
+                anchorPoolLiquiditySupply += liquidity;
             }
+            emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
 
-            // ---------- 2. LP mint (min of the two) ----------
-            uint256 lp0 = _toWadUSDC(usdcUsed) * anchorPoolLiquiditySupply / wadResUsdc;
-            uint256 lp1 = usyUsed * anchorPoolLiquiditySupply / wadResUsy;
-            liquidity = lp0 < lp1 ? lp0 : lp1;
-            anchorPoolLiquiditySupply += liquidity;
+            return abi.encode(sender, receiver, usdcUsed, usyUsed, liquidity);
+        } else if (action == 1) {
+            // CASE B: Remove Liquidity
+            RemoveLiquidityCallbackData memory data = abi.decode(callbackData.data, (RemoveLiquidityCallbackData));
+            address initiator = data.initiator; // User who initiated the removal
+            address receiver = data.receiver; // User who receives the USDC and USY
+            uint256 usdcAmount = data.usdcAmount; // USDC amount to return
+            uint256 usyAmount = data.usyAmount; // USY amount to return
+            uint256 liquidity = data.liquidity; // LP tokens burnt
+
+            // Update state
+            anchorPoolLPBalance[initiator] -= liquidity;
+            anchorPoolLiquiditySupply -= liquidity;
+            totalAnchorReserveUSDC -= usdcAmount;
+            totalAnchorReserveUSY -= usyAmount;
+
+            // Transfer tokens back to user using PoolManager's accounting systems
+            Currency usdcCurrency = Currency.wrap(usdc);
+            Currency usyCurrency = Currency.wrap(address(anchor));
+
+            usdcCurrency.settle(poolManager, address(this), usdcAmount, true);
+            usyCurrency.settle(poolManager, address(this), usyAmount, true);
+
+            // For USDC: Burn our claim tokens and give real USDC to user
+            usdcCurrency.take(poolManager, receiver, usdcAmount, false);
+            // For USY: Burn our claim tokens and give real USY to user
+            usyCurrency.take(poolManager, receiver, usyAmount, false);
+
+            emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
+
+            return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
+        } else {
+            // Case C:
         }
-
-        if (liquidity < _minLiquidity) revert YoloHook__InsufficientLiquidityMinted();
-
-        // ---------- 3. pull tokens & mint claim ----------
-        Currency cUSDC = Currency.wrap(usdc);
-        Currency cUSY = Currency.wrap(address(anchor));
-
-        cUSDC.settle(poolManager, msg.sender, usdcUsed, false);
-        cUSDC.take(poolManager, address(this), usdcUsed, true);
-
-        cUSY.settle(poolManager, msg.sender, usyUsed, false);
-        cUSY.take(poolManager, address(this), usyUsed, true);
-
-        // ---------- 4. book-keeping ----------
-        totalAnchorReserveUSDC += usdcUsed; // raw 6-dec
-        totalAnchorReserveUSY += usyUsed; // 18-dec
-        anchorPoolLPBalance[msg.sender] += liquidity;
-
-        emit AnchorLiquidityAdded(msg.sender, usdcUsed, usyUsed, liquidity);
-
-        // uint256 _totalSupply = anchorPoolLiquiditySupply;
-
-        // if (_totalSupply == 0) {
-        //     // First liquidity provision - use both amounts as provided
-        //     usdcUsed = _usdcAmount;
-        //     usyUsed = _usyAmount;
-        //     liquidity = _sqrt(_toWadUSDC(_usdcAmount) * _usyAmount) - MINIMUM_LIQUIDITY;
-        //     anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY;
-        // } else {
-        //     // Add safety check for zero reserves
-        //     if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
-        //         revert YoloHook_InsuficcientLiquidityBalance();
-        //     }
-
-        //     // Calculate optimal amounts with rounding that benefits the pool
-        //     // Round UP the required amounts to ensure pool gets slightly more
-        //     uint256 usdcRequired =
-        //         (_usyAmount * _toWadUSDC(totalAnchorReserveUSDC) + totalAnchorReserveUSY - 1) / totalAnchorReserveUSY;
-        //     uint256 usyRequired =
-        //         (_usdcAmount * totalAnchorReserveUSY + _toWadUSDC(totalAnchorReserveUSDC) - 1) /_toWadUSDC(totalAnchorReserveUSDC);
-
-        //     if (usdcRequired <= _usdcAmount) {
-        //         // USY is the limiting factor
-        //         usdcUsed = usdcRequired;
-        //         usyUsed = _usyAmount;
-        //     } else {
-        //         // USDC is the limiting factor
-        //         usdcUsed = _usdcAmount;
-        //         usyUsed = usyRequired;
-        //     }
-
-        //     // ✅ FIXED: Calculate liquidity with rounding DOWN to benefit pool
-        //     // User gets slightly fewer LP tokens
-        //     liquidity = (usdcUsed * _totalSupply) / totalAnchorReserveUSDC;
-        //     anchorPoolLiquiditySupply += liquidity;
-        // }
-
-        // if (liquidity < _minLiquidity) revert YoloHook__InsufficientLiquidityMinted();
-
-        // // Create currency objects
-        // Currency usdcCurrency = Currency.wrap(usdc);
-        // Currency usyCurrency = Currency.wrap(address(anchor));
-
-        // // Pull only the required amounts from user
-        // usdcCurrency.settle(poolManager, msg.sender, usdcUsed, false);
-        // usdcCurrency.take(poolManager, address(this), usdcUsed, true);
-        // usyCurrency.settle(poolManager, msg.sender, usyUsed, false);
-        // usyCurrency.take(poolManager, address(this), usyUsed, true);
-
-        // // Update reserves with actual amounts used
-        // totalAnchorReserveUSDC += usdcUsed;
-        // totalAnchorReserveUSY += usyUsed;
-
-        // // Update user balance
-        // anchorPoolLPBalance[msg.sender] += liquidity;
-
-        // emit AnchorLiquidityAdded(msg.sender, usdcUsed, usyUsed, liquidity);
     }
 
     /**
      * @notice  Remove liquidity from the anchor pool
-     * @param   _liquidity  Amount of LP tokens to burn
      * @param   _minUSDC    Minimum USDC to receive
      * @param   _minUSY     Minimum USY to receive
+     * @param   _liquidity  Amount of LP tokens to burn
      */
-    function removeAnchorLiquidity(uint256 _liquidity, uint256 _minUSDC, uint256 _minUSY)
+    function removeLiquidity(uint256 _minUSDC, uint256 _minUSY, uint256 _liquidity, address _receiver)
         external
-        returns (uint256 usdcAmount, uint256 usyAmount)
+        returns (uint256 usdcAmount, uint256 usyAmount, uint256 liquidity, address receiver)
     {
+        // Guard clause: ensure that the liquidity burnt is greater than zero
         if (_liquidity == 0) revert YoloHook_InvalidAddLiuidityParams();
-
-        // Check user has enough LP tokens
+        // Guard Claise: check user has enough LP tokens
         if (anchorPoolLPBalance[msg.sender] < _liquidity) revert YoloHook_InsuficcientLiquidityBalance();
-
+        // Guard clause: ensure that the anchor pool has enough liquidity
         if (anchorPoolLiquiditySupply == 0) revert YoloHook_InsuficcientLiquidityBalance();
 
         // Calculate proportional amounts with rounding DOWN to benefit pool
@@ -518,24 +469,27 @@ contract YoloHook is BaseHook, Ownable {
 
         if (usdcAmount < _minUSDC || usyAmount < _minUSY) revert YoloHook__InsufficientAmount();
 
-        // Update state
-        anchorPoolLPBalance[msg.sender] -= _liquidity;
-        anchorPoolLiquiditySupply -= _liquidity;
-        totalAnchorReserveUSDC -= usdcAmount;
-        totalAnchorReserveUSY -= usyAmount;
+        bytes memory data = poolManager.unlock(
+            abi.encode(
+                CallbackData(
+                    1, abi.encode(RemoveLiquidityCallbackData(msg.sender, _receiver, usdcAmount, usyAmount, _liquidity))
+                )
+            )
+        );
 
-        // Transfer tokens back to user using PoolManager's accounting systems
-        Currency usdcCurrency = Currency.wrap(usdc);
-        Currency usyCurrency = Currency.wrap(address(anchor));
+        // Decode the callback data to get the actual amounts used and liquidity minted
+        (address initiator, address receiver_, uint256 usdcAmount_, uint256 usyAmount_, uint256 liquidity_) =
+            abi.decode(data, (address, address, uint256, uint256, uint256));
 
-        usdcCurrency.settle(poolManager, address(this), usdcAmount, true);
-        usyCurrency.settle(poolManager, address(this), usyAmount, true);
-        // For USDC: Burn our claim tokens and give real USDC to user
-        usdcCurrency.take(poolManager, msg.sender, usdcAmount, false);
-        // For USY: Burn our claim tokens and give real USY to user
-        usyCurrency.take(poolManager, msg.sender, usyAmount, false);
+        emit HookModifyLiquidity(
+            anchorPoolId,
+            receiver,
+            int128(-int256(usdcAmount_)), // Convert to int128 for PoolManager
+            int128(-int256(usyAmount_)) // Convert to int128 for PoolManager
+        );
 
-        emit AnchorLiquidityRemoved(msg.sender, usdcAmount, usyAmount, _liquidity);
+        // Return the actual amounts and receiver
+        return (usdcAmount_, usyAmount_, liquidity_, receiver_);
     }
 
     // ***********************//
@@ -566,13 +520,25 @@ contract YoloHook is BaseHook, Ownable {
     /**
      * @notice  Revert to avoid directly adding liquidity to the PoolManager.
      */
+    function beforeModifyLiquidity(PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
+        revert YoloHook_MustAddLiquidityThroughHook();
+    }
+
+    /**
+     * @notice  Revert to avoid directly adding liquidity to the PoolManager.
+     */
     function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
         pure
         override
         returns (bytes4)
     {
-        // Guard clause: revert if someone tries to add liquidity directly on PoolManager
+        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
         revert YoloHook_MustAddLiquidityThroughHook();
     }
 
@@ -600,36 +566,6 @@ contract YoloHook is BaseHook, Ownable {
         returns (uint256 usdcUsed, uint256 usyUsed, uint256 liquidity)
     {
         return _quoteAdd(_usdcAmount, _usyAmount);
-        // if (anchorPoolLiquiditySupply == 0) {
-        //     // First liquidity provision
-        //     usdcUsed = _usdcAmount;
-        //     usyUsed = _usyAmount;
-        //     liquidity = _sqrt(_toWadUSDC(_usdcAmount) * _usyAmount) - MINIMUM_LIQUIDITY;
-        // } else {
-        //     // Add safety check and proper rounding
-        //     if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
-        //         return (0, 0, 0);
-        //     }
-
-        //     // Calculate optimal amounts with rounding UP (user pays slightly more)
-        //     uint256 usdcRequired =
-        //         (_usyAmount * totalAnchorReserveUSDC + totalAnchorReserveUSY - 1) / totalAnchorReserveUSY;
-        //     uint256 usyRequired =
-        //         (_usdcAmount * totalAnchorReserveUSY + totalAnchorReserveUSDC - 1) / totalAnchorReserveUSDC;
-
-        //     if (usdcRequired <= _usdcAmount) {
-        //         // USY is the limiting factor
-        //         usdcUsed = usdcRequired;
-        //         usyUsed = _usyAmount;
-        //     } else {
-        //         // USDC is the limiting factor
-        //         usdcUsed = _usdcAmount;
-        //         usyUsed = usyRequired;
-        //     }
-
-        //     // Calculate liquidity with rounding DOWN (user gets slightly fewer LP tokens)
-        //     liquidity = (usdcUsed * anchorPoolLiquiditySupply) / totalAnchorReserveUSDC;
-        // }
     }
 
     // ***************************//
