@@ -15,6 +15,7 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
         uint8 decimals;
         MockOracleConfig oracleConfig;
         YoloAssetConfiguration assetConfiguration;
+        address oracle;
     }
 
     struct CollateralAsset {
@@ -32,7 +33,8 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
                 "yJPY",
                 18,
                 MockOracleConfig("JPY / USD", 0.0069 * 1e8),
-                YoloAssetConfiguration(10_000_000_000 * 1e18, 10_000_000_000 * 1e18)
+                YoloAssetConfiguration(10_000_000_000 * 1e18, 10_000_000_000 * 1e18),
+                address(0)
             )
         );
         yoloAssetsArray.push(
@@ -41,7 +43,8 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
                 "yKRW",
                 18,
                 MockOracleConfig("KRW / USD", 71_000),
-                YoloAssetConfiguration(100_000_000_000 * 1e18, 100_000_000_000 * 1e18)
+                YoloAssetConfiguration(100_000_000_000 * 1e18, 100_000_000_000 * 1e18),
+                address(0)
             )
         );
         yoloAssetsArray.push(
@@ -50,7 +53,8 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
                 "yXAU",
                 18,
                 MockOracleConfig("XAU / USD", 3_201 * 1e8),
-                YoloAssetConfiguration(1_000_000 * 1e18, 1_000_000 * 1e18)
+                YoloAssetConfiguration(1_000_000 * 1e18, 1_000_000 * 1e18),
+                address(0)
             )
         );
         yoloAssetsArray.push(
@@ -59,7 +63,8 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
                 "yNVDA",
                 18,
                 MockOracleConfig("NVDIA / USD", 134 * 1e8),
-                YoloAssetConfiguration(10_000 * 1e18, 10_000 * 1e18)
+                YoloAssetConfiguration(10_000 * 1e18, 10_000 * 1e18),
+                address(0)
             )
         );
 
