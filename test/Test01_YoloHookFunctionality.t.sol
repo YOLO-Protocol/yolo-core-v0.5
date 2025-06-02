@@ -114,6 +114,10 @@ contract Test01_YoloHookFunctionality is Test, Base01_DeployUniswapV4Pool, Base0
             10, // 0.1% flash loan fee
             symbolToDeployedAsset["USDC"] // USDC address
         );
+
+        // D. Set Hook on YoloOracle
+        yoloOracle.setHook(address(yoloHookProxy));
+
         console.log();
         console.log("============================================================");
         console.log();
