@@ -476,8 +476,6 @@ contract Test01_YoloHookFunctionality is Test, Base01_DeployUniswapV4Pool, Base0
         assertEq(balUsyafter, wantOut, "got exact out");
     }
 
-
-
     // ************************ //
     // *** HELPER FUNCTIONS *** //
     // ************************ //
