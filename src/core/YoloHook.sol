@@ -527,6 +527,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
         if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
 
+        bool isNewPair = pairConfigs[_collateral][_yoloAsset].collateral == address(0);
+
         pairConfigs[_collateral][_yoloAsset] = CollateralToYoloAssetConfiguration({
             collateral: _collateral,
             yoloAsset: _yoloAsset,
@@ -535,7 +537,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             liquidationPenalty: _liquidationPenalty
         });
 
-        if (pairConfigs[_collateral][_yoloAsset].collateral == address(0)) {
+        // Only push to arrays if this is a new pair
+        if (isNewPair) {
             collateralToSupportedYoloAssets[_collateral].push(_yoloAsset);
             yoloAssetsToSupportedCollateral[_yoloAsset].push(_collateral);
         }
