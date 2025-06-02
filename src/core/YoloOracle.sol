@@ -47,7 +47,7 @@ contract YoloOracle is Ownable {
      *          while creating a new Yolo synthetic asset.
      */
     modifier onlyOwnerOrHook() {
-        if (msg.sender != owner() && msg.sender != address(yoloHook)) revert YoloHook__CallerNotOwnerOrHook();
+        if (msg.sender != owner() && msg.sender != address(yoloHook)) revert YoloOracle__CallerNotOwnerOrHook();
         _;
     }
 
@@ -74,7 +74,7 @@ contract YoloOracle is Ownable {
         // If anchor is set and the asset is the anchor, return a fixed price
         if (anchor != address(0) && _asset == anchor) return 1e8;
         IPriceOracle source = assetToPriceSource[_asset];
-        if (source == IPriceOracle(address(0))) revert YoloHook__UnsupportedAsset();
+        if (source == IPriceOracle(address(0))) revert YoloOracle__UnsupportedAsset();
         int256 price = source.latestAnswer();
         if (price > 0) return uint256(price);
         else return 0;
@@ -129,7 +129,7 @@ contract YoloOracle is Ownable {
      * @param   _anchor   Address of the anchor asset (Yolo USD).
      */
     function setAnchor(address _anchor) external onlyOwner {
-        if (anchor != address(0)) revert YoloHook__AnchorAlreadySet();
+        if (anchor != address(0)) revert YoloOracle__AnchorAlreadySet();
         anchor = _anchor;
         emit AnchorSet(_anchor);
     }
@@ -139,11 +139,11 @@ contract YoloOracle is Ownable {
     // ********************************* //
     function _setAssetsSources(address[] memory _assets, address[] memory _sources) internal {
         // Guard clause: ensure that the lengths of assets and sources arrays match
-        if (_assets.length != _sources.length) revert YoloHook__ParamsLengthMismatch();
+        if (_assets.length != _sources.length) revert YoloOracle__ParamsLengthMismatch();
 
         // Iterate
         for (uint256 i = 0; i < _assets.length; i++) {
-            if (_sources[i] == address(0)) revert YoloHook__PriceSourceCannotBeZero();
+            if (_sources[i] == address(0)) revert YoloOracle__PriceSourceCannotBeZero();
             assetToPriceSource[_assets[i]] = IPriceOracle(_sources[i]);
             emit AssetSourceUpdated(_assets[i], _sources[i]);
         }
