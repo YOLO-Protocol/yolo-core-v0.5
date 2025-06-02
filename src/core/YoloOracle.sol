@@ -32,11 +32,11 @@ contract YoloOracle is Ownable {
     // *****************//
     // *** ERRORS *** //
     // **************** //
-    error YoloHook__ParamsLengthMismatch();
-    error YoloHook__PriceSourceCannotBeZero();
-    error YoloHook__CallerNotOwnerOrHook();
-    error YoloHook__AnchorAlreadySet();
-    error YoloHook__UnsupportedAsset();
+    error YoloOracle__ParamsLengthMismatch();
+    error YoloOracle__PriceSourceCannotBeZero();
+    error YoloOracle__CallerNotOwnerOrHook();
+    error YoloOracle__AnchorAlreadySet();
+    error YoloOracle__UnsupportedAsset();
 
     // *****************//
     // *** MODIFIER *** //
@@ -102,6 +102,14 @@ contract YoloOracle is Ownable {
      */
     function setAssetSources(address[] calldata _assets, address[] calldata _sources) external onlyOwnerOrHook {
         _setAssetsSources(_assets, _sources);
+    }
+
+    /**
+     * @notice  Return the address of the price feed for given asset.
+     * @param   _asset      The asset where price source is needed.
+     */
+    function getSourceOfAsset(address _asset) external view returns (address) {
+        return address(assetToPriceSource[_asset]);
     }
 
     /**
