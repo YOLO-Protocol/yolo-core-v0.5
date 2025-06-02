@@ -7,16 +7,16 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BeforeSwapDelta, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
-
 /*---------- IMPORT INTERFACES ----------*/
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IWETH} from "@yolo/contracts/interfaces/IWETH.sol";
 import {IYoloOracle} from "@yolo/contracts/interfaces/IYoloOracle.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
-import {IPoolManager, ModifyLiquidityParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 /*---------- IMPORT CONTRACTS ----------*/
 import {YoloSyntheticAsset} from "@yolo/contracts/tokenization/YoloSyntheticAsset.sol";
@@ -71,6 +71,15 @@ contract YoloHook is BaseHook, Ownable {
         uint256 liquidity; // LP tokens burnt
     }
 
+    struct SwapCallbackData {
+        address sender;
+        address tokenIn;
+        uint256 amountInFromUser;
+        address tokenOut;
+        uint256 amountOutToUser;
+        bool zeroForOne;
+    }
+
     struct YoloAssetConfiguration {
         address yoloAssetAddress;
         uint256 maxMintableCap; // 0 == Pause
@@ -118,6 +127,7 @@ contract YoloHook is BaseHook, Ownable {
     address public treasury; // Address of the treasury to collect fees
     IWETH public weth;
     IYoloOracle public yoloOracle;
+    address public swapRouter;
 
     /*----- Fees Configuration -----*/
     uint256 public stableSwapFee; // Swap fee for the anchor pool, in basis points (e.g., 100 = 1%)
@@ -128,11 +138,15 @@ contract YoloHook is BaseHook, Ownable {
     IYoloSyntheticAsset public anchor;
     address public usdc; // USDC address, used in the anchor pool to pair with USY
     bytes32 public anchorPoolId; // Anchor pool ID, used to identify the pool in the PoolManager
+    address public anchorPoolToken0; // Token0 address of the anchor pool, set in initialize
+    address public anchorPoolToken1; // Token1 address of the anchor pool, set in initialize
+
     mapping(bytes32 => bool) public isAnchorPool;
     uint256 public anchorPoolLiquiditySupply; // Total LP tokens for anchor pool
     mapping(address => uint256) public anchorPoolLPBalance; // User LP balances
-    // mapping(address => uint256) public anchorPoolReserveUSDC; // USDC reserves
-    // mapping(address => uint256) public anchorPoolReserveUSY; // USY reserves
+
+    /*----- Synthetic Pools -----*/
+    mapping(bytes32 => bool) public isSyntheticPool;
 
     uint256 private USDC_SCALE_UP; // Make sure USDC is scaled up to 18 decimals
 
@@ -142,7 +156,8 @@ contract YoloHook is BaseHook, Ownable {
 
     // Constants for stableswap math
     uint256 private constant MINIMUM_LIQUIDITY = 1000;
-    uint256 private constant PRECISION = 1e18;
+    uint256 private constant MATH_PRECISION = 1e18;
+    uint8 private constant STABLESWAP_ITERATIONS = 255; // Maximum iterations for stable swap Newton-Raphson method
 
     /*----- Aseet & Collateral Configurations -----*/
     mapping(address => bool) public isYoloAsset; // Mapping to check if an address is a Yolo asset
@@ -161,26 +176,47 @@ contract YoloHook is BaseHook, Ownable {
     event HookModifyLiquidity(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1);
 
     event AnchorLiquidityAdded(
-        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity
+        address indexed sender,
+        address indexed receiver,
+        uint256 usdcAmount,
+        uint256 usyAmount,
+        uint256 liquidityMintedToUser
     );
 
     event AnchorLiquidityRemoved(
-        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidity
+        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidityBurned
     );
 
-    event AnchorSwapExecuted(address indexed sender, bool usdcForUSY, uint256 amountIn, uint256 amountOut, uint256 fee);
+    event AnchorSwapExecuted(
+        bytes32 indexed poolId,
+        address indexed sender,
+        address indexed receiver,
+        bool zeroForOne,
+        address tokenIn,
+        uint256 amountIn,
+        address tokenOut,
+        uint256 amountOut,
+        uint256 feeAmount
+    );
 
     // ***************//
     // *** ERRORS *** //
     // ************** //
     error Ownable__AlreadyInitialized();
-    error YoloHook_ZeroAddress();
-    error YoloHook_MustAddLiquidityThroughHook();
-    error YoloHook_InvalidAddLiuidityParams();
+    error YoloHook__ZeroAddress();
+    error YoloHook__MustAddLiquidityThroughHook();
+    error YoloHook__InvalidAddLiuidityParams();
     error YoloHook__InsufficientLiquidityMinted();
-    error YoloHook_InsuficcientLiquidityBalance();
+    error YoloHook__InsufficientLiquidityBalance();
     error YoloHook__InsufficientAmount();
     error YoloHook__KInvariantViolation();
+    error YoloHook__UnknownUnlockActionError();
+    error YoloHook__InvalidPoolId();
+    error YoloHook__InsufficientReserves();
+    error YoloHook__MathOverflow();
+    error YoloHook__StableswapConvergenceError();
+    error YoloHook__InvalidOutput();
+    error YoloHook__InvalidSwapAmounts();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -200,7 +236,7 @@ contract YoloHook is BaseHook, Ownable {
      * @param   _stableSwapFee      Swap fee for the anchor pool, in basis points (e.g., 100 = 1%).
      * @param   _syntheticSwapFee   Swap fee for the hook, in basis points (e.g., 100 = 1%).
      * @param   _flashLoanFee       Flash loan fee for the hook, in basis points (e.g., 100 = 1%).
-     * @param   _usdc               Address of the USDC contract, used in the anchor pool.
+     * @param   _usdcAddress        Address of the USDC contract, used in the anchor pool.
      */
     function initialize(
         address _wethAddress,
@@ -209,14 +245,20 @@ contract YoloHook is BaseHook, Ownable {
         uint256 _stableSwapFee,
         uint256 _syntheticSwapFee,
         uint256 _flashLoanFee,
-        address _usdc
+        address _usdcAddress
     ) external {
         // Guard clause: ensure that the addresses are not zero
-        if (_wethAddress == address(0) || _treasury == address(0) || _yoloOracle == address(0) || _usdc == address(0)) {
-            revert YoloHook_ZeroAddress();
+        if (
+            _wethAddress == address(0) || _treasury == address(0) || _yoloOracle == address(0)
+                || _usdcAddress == address(0)
+        ) {
+            revert YoloHook__ZeroAddress();
         }
+
+        // For proxy's owner initialization
         if (owner() != address(0)) revert Ownable__AlreadyInitialized();
         _transferOwnership(msg.sender);
+
         // Initialize the BaseHook with paramaters
         weth = IWETH(_wethAddress);
         treasury = _treasury;
@@ -224,10 +266,10 @@ contract YoloHook is BaseHook, Ownable {
         stableSwapFee = _stableSwapFee;
         syntheticSwapFee = _syntheticSwapFee;
         flashLoanFee = _flashLoanFee;
-        usdc = _usdc;
+        usdc = _usdcAddress;
 
         // Determine USDC scale factor
-        uint8 usdcDecimals = IERC20Metadata(_usdc).decimals();
+        uint8 usdcDecimals = IERC20Metadata(_usdcAddress).decimals();
         USDC_SCALE_UP = 10 ** (18 - usdcDecimals);
 
         // Create the anchor synthetic asset (USY)
@@ -242,20 +284,32 @@ contract YoloHook is BaseHook, Ownable {
 
         /*----- Initialize Anchor Pool on Pool Manager -----*/
 
-        // Sort the tokens for the anchor pool
-        address tokenA = address(usdc);
+        address tokenA = usdc;
         address tokenB = address(anchor);
-        bool usdcIs0 = tokenA < tokenB;
-        Currency c0 = Currency.wrap(usdcIs0 ? tokenA : tokenB);
-        Currency c1 = Currency.wrap(usdcIs0 ? tokenB : tokenA);
 
+        // Sort the tokens for the anchor pool
+        Currency c0;
+        Currency c1;
+        if (tokenA < tokenB) {
+            c0 = Currency.wrap(tokenA);
+            c1 = Currency.wrap(tokenB);
+            anchorPoolToken0 = tokenA;
+            anchorPoolToken1 = tokenB;
+        } else {
+            c0 = Currency.wrap(tokenB);
+            c1 = Currency.wrap(tokenA);
+            anchorPoolToken0 = tokenB;
+            anchorPoolToken1 = tokenA;
+        }
+
+        // Initialize the anchor pool with the sorted tokens and fee
         PoolKey memory pk =
             PoolKey({currency0: c0, currency1: c1, fee: 0, tickSpacing: 1, hooks: IHooks(address(this))});
+        // let PM burn any USDC or USY claim-tokens we mint later
         poolManager.initialize(pk, uint160(1) << 96);
         anchorPoolId = PoolId.unwrap(pk.toId());
         isAnchorPool[PoolId.unwrap(pk.toId())] = true;
     }
-
     // ***************************** //
     // *** USER FACING FUNCTIONS *** //
     // ***************************** //
@@ -278,8 +332,10 @@ contract YoloHook is BaseHook, Ownable {
         external
         returns (uint256 actualUsdcUsed, uint256 actualUsyUsed, uint256 actualLiquidityMinted, address actualReceiver)
     {
-        // Guard clause: ensure that the amounts are greater than zero
-        if (_maxUsdcAmount == 0 || _maxUsyAmount == 0) revert YoloHook_InvalidAddLiuidityParams();
+        // Guard clause: ensure that the amounts are greater than zero, and the receiver is not zero address
+        if (_maxUsdcAmount == 0 || _maxUsyAmount == 0 || _receiver == address(0)) {
+            revert YoloHook__InvalidAddLiuidityParams();
+        }
         uint256 maxUsdcAmountInWad = _toWadUSDC(_maxUsdcAmount); // Convert raw USDC to WAD (18 decimals)
         uint256 maxUsyAmountInWad = _maxUsyAmount; // USY is already in 18 decimals
 
@@ -360,12 +416,16 @@ contract YoloHook is BaseHook, Ownable {
         ) = abi.decode(data, (address, address, uint256, uint256, uint256));
 
         // Emit Hook Event
-        emit HookModifyLiquidity(
-            anchorPoolId,
-            receiver,
-            int128(int256(_actualUsdcUsed)), // Convert to int128 for PoolManager
-            int128(int256(_actualUsyUsed)) // Convert to int128 for PoolManager
-        );
+        if (anchorPoolToken0 == usdc) {
+            emit HookModifyLiquidity(
+                anchorPoolId, _receiver, int128(int256(_actualUsdcUsed)), int128(int256(_actualUsyUsed))
+            );
+        } else {
+            // anchorPoolToken0 is USY
+            emit HookModifyLiquidity(
+                anchorPoolId, _receiver, int128(int256(_actualUsyUsed)), int128(int256(_actualUsdcUsed))
+            );
+        }
 
         return (_actualUsdcUsed, _actualUsyUsed, _actualLiquidityMinted, receiver);
     }
@@ -440,8 +500,89 @@ contract YoloHook is BaseHook, Ownable {
             emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
 
             return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
+
+            // } else if (action == 2) {
+            //     // Case C: Anchor Swap
+
+            //     SwapCallbackData memory data = abi.decode(callbackData.data, (SwapCallbackData));
+
+            //     Currency cIn = Currency.wrap(data.tokenIn);
+            //     Currency cOut = Currency.wrap(data.tokenOut);
+
+            //     /* 1. user pays gross input to PM */
+            //     cIn.settle(poolManager, data.sender, data.amountInFromUser, false);
+
+            //     /* 2. split into fee + net (same formula used in _beforeSwap) */
+            //     uint256 feeRaw = (data.amountInFromUser * stableSwapFee) / PRECISION_DIVISOR;
+            //     uint256 netRaw = data.amountInFromUser - feeRaw;
+
+            //     /* 3. mint claim-tokens */
+            //     cIn.take(poolManager, address(this), netRaw, true); // backs reserve
+            //     if (feeRaw != 0) {
+            //         cIn.take(poolManager, treasury, feeRaw, true); // fee to treasury
+            //     }
+
+            //     /* 4. provide output & pay user */
+            //     cOut.settle(poolManager, address(this), data.amountOutToUser, true);
+            //     cOut.take(poolManager, data.sender, data.amountOutToUser, false);
+
+            //     /* 5. build BalanceDelta in (currency0, currency1) order */
+            //     int128 d0;
+            //     int128 d1;
+            //     if (data.zeroForOne) {
+            //         d0 = int128(uint128(data.amountInFromUser));
+            //         d1 = -int128(uint128(data.amountOutToUser));
+            //     } else {
+            //         d1 = int128(uint128(data.amountInFromUser));
+            //         d0 = -int128(uint128(data.amountOutToUser));
+            //     }
+
+            //     return abi.encode(d0, d1);
+
+            // // Case C: Anchor Swap
+            // SwapCallbackData memory data = abi.decode(callbackData.data, (SwapCallbackData));
+
+            // Currency cIn = Currency.wrap(data.tokenIn);
+            // Currency cOut = Currency.wrap(data.tokenOut);
+
+            // // Creates a debit of `amountInFromUser` in the PM
+            // cIn.settle(poolManager, data.sender, data.amountInFromUser, false);
+
+            // // Split gross input into fee & net
+            // uint256 feeRaw = (data.amountInFromUser * stableSwapFee) / PRECISION_DIVISOR;
+            // uint256 netRaw = data.amountInFromUser - feeRaw;
+
+            // // Hook takes the net part (backs the reserve increase)
+            // cIn.take(poolManager, address(this), netRaw, true);
+
+            // // Treasury takes the fee part
+            // if (feeRaw > 0) {
+            //     cIn.take(poolManager, treasury, feeRaw, true);
+            // }
+
+            // // Gives the PM a credit of `amountOutToUser`
+            // cOut.settle(poolManager, address(this), data.amountOutToUser, true);
+
+            // // PM pays tokenOut to the user
+            // cOut.take(poolManager, data.sender, data.amountOutToUser, false);
+
+            // // Build & return BalanceDelta -------- */
+            // // Delta is expressed in (currency0, currency1) order
+            // int128 delta0;
+            // int128 delta1;
+            // if (data.zeroForOne) {
+            //     // user sold currency0, bought currency1
+            //     delta0 = int128(uint128(data.amountInFromUser)); // PM net + token0
+            //     delta1 = -int128(uint128(data.amountOutToUser)); // PM net – token1
+            // } else {
+            //     // user sold currency1, bought currency0
+            //     delta1 = int128(uint128(data.amountInFromUser)); // PM net + token1
+            //     delta0 = -int128(uint128(data.amountOutToUser)); // PM net – token0
+            // }
+
+            // return abi.encode(delta0, delta1);
         } else {
-            // Case C:
+            revert YoloHook__UnknownUnlockActionError();
         }
     }
 
@@ -450,17 +591,18 @@ contract YoloHook is BaseHook, Ownable {
      * @param   _minUSDC    Minimum USDC to receive
      * @param   _minUSY     Minimum USY to receive
      * @param   _liquidity  Amount of LP tokens to burn
+     * @param   _receiver   Address to receive the USDC and USY
      */
     function removeLiquidity(uint256 _minUSDC, uint256 _minUSY, uint256 _liquidity, address _receiver)
         external
         returns (uint256 usdcAmount, uint256 usyAmount, uint256 liquidity, address receiver)
     {
         // Guard clause: ensure that the liquidity burnt is greater than zero
-        if (_liquidity == 0) revert YoloHook_InvalidAddLiuidityParams();
+        if (_liquidity == 0) revert YoloHook__InvalidAddLiuidityParams();
         // Guard Claise: check user has enough LP tokens
-        if (anchorPoolLPBalance[msg.sender] < _liquidity) revert YoloHook_InsuficcientLiquidityBalance();
+        if (anchorPoolLPBalance[msg.sender] < _liquidity) revert YoloHook__InsufficientLiquidityBalance();
         // Guard clause: ensure that the anchor pool has enough liquidity
-        if (anchorPoolLiquiditySupply == 0) revert YoloHook_InsuficcientLiquidityBalance();
+        if (anchorPoolLiquiditySupply == 0) revert YoloHook__InsufficientLiquidityBalance();
 
         // Calculate proportional amounts with rounding DOWN to benefit pool
         // User gets slightly less, pool keeps the dust
@@ -481,12 +623,12 @@ contract YoloHook is BaseHook, Ownable {
         (address initiator, address receiver_, uint256 usdcAmount_, uint256 usyAmount_, uint256 liquidity_) =
             abi.decode(data, (address, address, uint256, uint256, uint256));
 
-        emit HookModifyLiquidity(
-            anchorPoolId,
-            receiver,
-            int128(-int256(usdcAmount_)), // Convert to int128 for PoolManager
-            int128(-int256(usyAmount_)) // Convert to int128 for PoolManager
-        );
+        if (anchorPoolToken0 == usdc) {
+            emit HookModifyLiquidity(anchorPoolId, receiver, -int128(int256(usdcAmount_)), -int128(int256(usyAmount_)));
+        } else {
+            // anchorPoolToken0 is USY
+            emit HookModifyLiquidity(anchorPoolId, receiver, -int128(int256(usyAmount_)), -int128(int256(usdcAmount_)));
+        }
 
         // Return the actual amounts and receiver
         return (usdcAmount_, usyAmount_, liquidity_, receiver_);
@@ -526,7 +668,7 @@ contract YoloHook is BaseHook, Ownable {
         returns (bytes4)
     {
         // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook_MustAddLiquidityThroughHook();
+        revert YoloHook__MustAddLiquidityThroughHook();
     }
 
     /**
@@ -539,7 +681,149 @@ contract YoloHook is BaseHook, Ownable {
         returns (bytes4)
     {
         // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook_MustAddLiquidityThroughHook();
+        revert YoloHook__MustAddLiquidityThroughHook();
+    }
+
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+        internal
+        override
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        // Determine and examine the pool
+        bytes32 poolId = PoolId.unwrap(key.toId());
+
+        // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
+        BeforeSwapDelta beforeSwapDelta;
+
+        // Tokens Instance
+        Currency currencyIn;
+        Currency currencyOut;
+        address tokenInAddr;
+        address tokenOutAddr;
+
+        if (isAnchorPool[poolId]) {
+            // A. Execute stable swap if it's anchor pool
+
+            // 1. Parse Input
+            if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
+                revert YoloHook__InsufficientReserves();
+            }
+
+            bool usdcToUsy = (params.zeroForOne == (anchorPoolToken0 == usdc));
+            currencyIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
+            currencyOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
+
+            uint256 reserveInRaw = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
+            uint256 reserveOutRaw = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
+
+            uint256 scaleUpIn = usdcToUsy ? USDC_SCALE_UP : 1;
+            uint256 scaleUpOut = usdcToUsy ? 1 : USDC_SCALE_UP;
+
+            uint256 reserveInWad = reserveInRaw * scaleUpIn;
+            uint256 reserveOutWad = reserveOutRaw * scaleUpOut;
+
+            // 2. Quote
+            uint256 grossInRaw;
+            uint256 netInRaw;
+            uint256 feeRaw;
+            uint256 amountOutRaw;
+
+            if (params.amountSpecified < 0) {
+                // 2A. Exact Input
+                grossInRaw = uint256(-params.amountSpecified);
+                uint256 grossInWad = grossInRaw * scaleUpIn;
+
+                uint256 feeWad = (grossInWad * stableSwapFee) / PRECISION_DIVISOR;
+                uint256 netInWad = grossInWad - feeWad;
+
+                uint256 outWad = _calculateStableSwapOutputInternal(netInWad, reserveInWad, reserveOutWad);
+                if (outWad == 0) revert YoloHook__InvalidOutput();
+
+                amountOutRaw = outWad / scaleUpOut;
+                feeRaw = feeWad / scaleUpIn;
+                netInRaw = grossInRaw - feeRaw;
+            } else {
+                // 2B. Exact Output
+                amountOutRaw = uint256(params.amountSpecified);
+                uint256 desiredOutWad = amountOutRaw * scaleUpOut;
+
+                uint256 netInWad = _calculateStableSwapInputInternal(desiredOutWad, reserveInWad, reserveOutWad);
+
+                uint256 grossInWad =
+                    (netInWad * PRECISION_DIVISOR + (PRECISION_DIVISOR - 1)) / (PRECISION_DIVISOR - stableSwapFee); // ceil-div
+                uint256 feeWad = grossInWad - netInWad;
+
+                grossInRaw = grossInWad / scaleUpIn;
+                feeRaw = feeWad / scaleUpIn;
+                netInRaw = grossInRaw - feeRaw;
+            }
+
+            // 3. Update Reserves
+            if (usdcToUsy) {
+                totalAnchorReserveUSDC = reserveInRaw + netInRaw;
+                totalAnchorReserveUSY = reserveOutRaw - amountOutRaw;
+            } else {
+                totalAnchorReserveUSY = reserveInRaw + netInRaw;
+                totalAnchorReserveUSDC = reserveOutRaw - amountOutRaw;
+            }
+
+            // 4. Construct BeforeSwapDelta
+            int128 dSpecified;
+            int128 dUnspecified;
+
+            if (params.amountSpecified < 0) {
+                dSpecified = int128(uint128(grossInRaw));
+                dUnspecified = -int128(uint128(amountOutRaw));
+            } else {
+                dSpecified = -int128(uint128(amountOutRaw));
+                dUnspecified = int128(uint128(grossInRaw));
+            }
+            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
+
+            // 5. Currency Settlement
+
+            Currency cIn = currencyIn;
+            Currency cOut = currencyOut;
+
+            cIn.take(poolManager, address(this), netInRaw, true);
+            if (feeRaw != 0) {
+                cIn.take(poolManager, treasury, feeRaw, false);
+            }
+            cOut.settle(poolManager, address(this), amountOutRaw, true);
+
+            emit AnchorSwapExecuted(
+                poolId,
+                sender,
+                sender,
+                params.zeroForOne,
+                Currency.unwrap(currencyIn),
+                grossInRaw,
+                Currency.unwrap(currencyOut),
+                amountOutRaw,
+                feeRaw
+            );
+
+            return (this.beforeSwap.selector, beforeSwapDelta, 0);
+        } else if (isSyntheticPool[poolId]) {
+            // Execute stynthetic swap (oracle swap) if it's synthetic pool
+        } else {
+            revert YoloHook__InvalidPoolId();
+        }
+
+        // Call to unlockcall back for currency settlement
+
+        return (this.beforeSwap.selector, beforeSwapDelta, 0);
+    }
+
+    function _afterSwap(
+        address, // sender   (unused)
+        PoolKey calldata, // key      (unused)
+        SwapParams calldata, // params   (unused)
+        BalanceDelta, // delta    (unused)
+        bytes calldata // hookData (unused)
+    ) internal override returns (bytes4, int128) {
+        // return our external afterSwap selector and “zero” delta
+        return (this.afterSwap.selector, int128(0));
     }
 
     // ***********************//
@@ -630,5 +914,126 @@ contract YoloHook is BaseHook, Ownable {
      */
     function _fromWadUSDC(uint256 _wad) internal view returns (uint256) {
         return _wad / USDC_SCALE_UP;
+    }
+
+    // ***********************************//
+    // *** STABLESWAP MATH FUNCTIONS *** //
+    // ********************************** //
+
+    function _getK_stable(uint256 x_18d, uint256 y_18d) internal pure returns (uint256 k_18d) {
+        if (x_18d == 0 || y_18d == 0) return 0;
+        uint256 xy_P = (x_18d * y_18d) / MATH_PRECISION;
+        uint256 x_sq_P = (x_18d * x_18d) / MATH_PRECISION;
+        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
+        k_18d = (xy_P * (x_sq_P + y_sq_P)) / MATH_PRECISION;
+        return k_18d;
+    }
+
+    function _f_stable(uint256 x0_18d, uint256 y_18d) private pure returns (uint256) {
+        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
+        uint256 y_cubed_P2 = (y_sq_P * y_18d) / MATH_PRECISION;
+        uint256 term1 = (x0_18d * y_cubed_P2) / MATH_PRECISION;
+
+        uint256 x0_sq_P = (x0_18d * x0_18d) / MATH_PRECISION;
+        uint256 x0_cubed_P2 = (x0_sq_P * x0_18d) / MATH_PRECISION;
+        uint256 term2 = (y_18d * x0_cubed_P2) / MATH_PRECISION;
+        return term1 + term2;
+    }
+
+    function _d_stable(uint256 x0_18d, uint256 y_18d) internal pure returns (uint256) {
+        uint256 x0_cubed_P2 = (((x0_18d * x0_18d) / MATH_PRECISION) * x0_18d) / MATH_PRECISION;
+
+        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
+        uint256 x0_y_sq_P2 = (x0_18d * y_sq_P) / MATH_PRECISION;
+
+        if (x0_y_sq_P2 > type(uint256).max / 3) {
+            revert YoloHook__MathOverflow();
+        }
+        uint256 term2_3x = 3 * x0_y_sq_P2;
+
+        uint256 derivative = x0_cubed_P2 + term2_3x;
+        if (derivative == 0) revert YoloHook__StableswapConvergenceError();
+        return derivative;
+    }
+
+    function _getY_stable(uint256 x0_18d, uint256 k_18d, uint256 y_guess_18d)
+        internal
+        pure
+        returns (uint256 y_new_18d)
+    {
+        y_new_18d = y_guess_18d;
+        if (x0_18d == 0) {
+            if (k_18d > 0) revert YoloHook__StableswapConvergenceError();
+            return 0;
+        }
+
+        for (uint256 i = 0; i < STABLESWAP_ITERATIONS; i++) {
+            uint256 y_prev = y_new_18d;
+            uint256 f_val = _f_stable(x0_18d, y_new_18d);
+            uint256 d_val = _d_stable(x0_18d, y_new_18d);
+
+            uint256 dy;
+            if (f_val < k_18d) {
+                dy = ((k_18d - f_val) * MATH_PRECISION) / d_val;
+                y_new_18d = y_new_18d + dy;
+            } else {
+                dy = ((f_val - k_18d) * MATH_PRECISION) / d_val;
+                if (dy > y_new_18d) {
+                    y_new_18d = 0;
+                } else {
+                    y_new_18d = y_new_18d - dy;
+                }
+            }
+
+            if (y_new_18d > y_prev) {
+                if (y_new_18d - y_prev <= 1) break;
+            } else {
+                if (y_prev - y_new_18d <= 1) break;
+            }
+        }
+        return y_new_18d;
+    }
+
+    function _calculateStableSwapOutputInternal(uint256 netAmountIn_18d, uint256 reserveIn_18d, uint256 reserveOut_18d)
+        internal
+        pure
+        returns (uint256 amountOut_18d)
+    {
+        if (netAmountIn_18d == 0) return 0;
+        uint256 k_val = _getK_stable(reserveIn_18d, reserveOut_18d);
+
+        if (k_val == 0) {
+            revert YoloHook__InsufficientReserves();
+        }
+
+        uint256 newReserveIn_18d = reserveIn_18d + netAmountIn_18d;
+        uint256 newReserveOut_18d = _getY_stable(newReserveIn_18d, k_val, reserveOut_18d);
+
+        if (newReserveOut_18d >= reserveOut_18d) return 0;
+        amountOut_18d = reserveOut_18d - newReserveOut_18d;
+    }
+
+    function _calculateStableSwapInputInternal(uint256 amountOut_18d, uint256 reserveIn_18d, uint256 reserveOut_18d)
+        internal
+        pure
+        returns (uint256 netAmountIn_18d)
+    {
+        if (amountOut_18d == 0) return 0;
+        if (amountOut_18d >= reserveOut_18d) {
+            revert YoloHook__InsufficientReserves();
+        }
+
+        uint256 k_val = _getK_stable(reserveIn_18d, reserveOut_18d);
+        if (k_val == 0) {
+            revert YoloHook__InsufficientReserves();
+        }
+
+        uint256 newReserveOut_18d = reserveOut_18d - amountOut_18d;
+        uint256 newReserveIn_18d = _getY_stable(newReserveOut_18d, k_val, reserveIn_18d);
+
+        if (newReserveIn_18d <= reserveIn_18d) {
+            revert YoloHook__InvalidSwapAmounts();
+        }
+        netAmountIn_18d = newReserveIn_18d - reserveIn_18d;
     }
 }
