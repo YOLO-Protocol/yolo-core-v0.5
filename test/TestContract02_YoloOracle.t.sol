@@ -117,7 +117,7 @@ contract TestContract02_YoloOracle is Test, Base02_DeployMockAssetsAndOracles {
 
         // Should fail when called by non-owner/non-hook
         vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSignature("YoloHook__CallerNotOwnerOrHook()"));
+        vm.expectRevert(abi.encodeWithSignature("YoloOracle__CallerNotOwnerOrHook()"));
         yoloOracle.setAssetSources(newAssets, newSources);
 
         // Set hook first
@@ -164,7 +164,7 @@ contract TestContract02_YoloOracle is Test, Base02_DeployMockAssetsAndOracles {
         assertEq(anchorPrice, 1e8, "Anchor asset should return fixed price of 1e8");
 
         // Should not be able to set anchor twice
-        vm.expectRevert(abi.encodeWithSignature("YoloHook__AnchorAlreadySet()"));
+        vm.expectRevert(abi.encodeWithSignature("YoloOracle__AnchorAlreadySet()"));
         yoloOracle.setAnchor(address(0x9999));
     }
 
@@ -174,7 +174,7 @@ contract TestContract02_YoloOracle is Test, Base02_DeployMockAssetsAndOracles {
     function test_Contract02_Case07_unsupportedAssetError() public {
         address unsupportedAsset = address(0x1111);
 
-        vm.expectRevert(abi.encodeWithSignature("YoloHook__UnsupportedAsset()"));
+        vm.expectRevert(abi.encodeWithSignature("YoloOracle__UnsupportedAsset()"));
         yoloOracle.getAssetPrice(unsupportedAsset);
     }
 
@@ -190,7 +190,7 @@ contract TestContract02_YoloOracle is Test, Base02_DeployMockAssetsAndOracles {
         testSources[0] = oracles[0];
 
         // Should revert due to length mismatch
-        vm.expectRevert(abi.encodeWithSignature("YoloHook__ParamsLengthMismatch()"));
+        vm.expectRevert(abi.encodeWithSignature("YoloOracle__ParamsLengthMismatch()"));
         yoloOracle.setAssetSources(testAssets, testSources);
 
         // Should revert when trying to set zero address as price source
@@ -199,7 +199,7 @@ contract TestContract02_YoloOracle is Test, Base02_DeployMockAssetsAndOracles {
         singleAsset[0] = assets[0];
         zeroSource[0] = address(0);
 
-        vm.expectRevert(abi.encodeWithSignature("YoloHook__PriceSourceCannotBeZero()"));
+        vm.expectRevert(abi.encodeWithSignature("YoloOracle__PriceSourceCannotBeZero()"));
         yoloOracle.setAssetSources(singleAsset, zeroSource);
     }
 
