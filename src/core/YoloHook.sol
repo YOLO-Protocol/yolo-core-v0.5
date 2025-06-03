@@ -152,6 +152,11 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     /*----- Synthetic Pools -----*/
     mapping(bytes32 => bool) public isSyntheticPool;
 
+    /*----- Synthetic Swap Placeholders -----*/
+    // => To be used in afterSwap to burn the pulled YoloAssets after settlement
+    address private assetToBurn;
+    uint256 private amountToBurn;
+
     uint256 private USDC_SCALE_UP; // Make sure USDC is scaled up to 18 decimals
 
     // Anchor pool reserves
@@ -213,6 +218,18 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     );
 
     event AnchorSwapExecuted(
+        bytes32 indexed poolId,
+        address indexed sender,
+        address indexed receiver,
+        bool zeroForOne,
+        address tokenIn,
+        uint256 amountIn,
+        address tokenOut,
+        uint256 amountOut,
+        uint256 feeAmount
+    );
+
+    event SyntheticSwapExecuted(
         bytes32 indexed poolId,
         address indexed sender,
         address indexed receiver,
@@ -327,6 +344,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__InvalidPosition();
     error YoloHook__InvalidSeizeAmount();
     error YoloHook__ExceedsFlashLoanCap();
+    error YoloHook__NoPendingBurns();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -975,6 +993,17 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         emit BatchFlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
     }
 
+    // function burnPendings() public {
+    //     if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
+
+    //     Currency c = Currency.wrap(assetToBurn);
+    //     c.take(poolManager, address(this), amountToBurn, )
+
+    //     assetToBurn = address(0);
+    //     amountToBurn = 0;
+
+    // }
+
     // ******************************//
     // *** ANCHOR POOL FUNCTIONS *** //
     // ***************************** //
@@ -1358,11 +1387,13 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             int128 dUnspecified;
 
             if (params.amountSpecified < 0) {
-                dSpecified = int128(uint128(grossInRaw));
-                dUnspecified = -int128(uint128(amountOutRaw));
+                // Exact Input
+                dSpecified = int128(uint128(grossInRaw)); // Positive
+                dUnspecified = -int128(uint128(amountOutRaw)); // Negative
             } else {
-                dSpecified = -int128(uint128(amountOutRaw));
-                dUnspecified = int128(uint128(grossInRaw));
+                // Exact Output
+                dSpecified = -int128(uint128(amountOutRaw)); // negative
+                dUnspecified = int128(uint128(grossInRaw)); // positive
             }
             beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
 
@@ -1423,49 +1454,78 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             // 1. Pick the input / output currencies.
             (Currency cIn, Currency cOut) =
                 params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
-
             address tokenIn = Currency.unwrap(cIn);
             address tokenOut = Currency.unwrap(cOut);
 
-            // 2. Absolute value of the user-specified amount.
-            uint256 grossInRaw = params.amountSpecified > 0
-                ? uint256(params.amountSpecified) // exact-output swap
-                : uint256(-params.amountSpecified); // exact-input swap
+            // 2. Determine is exact-input or exact-output
+            bool isExactInput = params.amountSpecified < 0 ? true : false;
 
-            // 3. Fee calculation (taken on *input* asset).
-            uint256 feeRaw = (grossInRaw * syntheticSwapFee) / PRECISION_DIVISOR;
-            uint256 netInRaw = grossInRaw - feeRaw; // what is actually converted
+            uint256 grossInputAmount;
+            uint256 netInputAmount;
+            uint256 netOutputAmount;
+            uint256 fee;
 
-            // 4. Pull the full amount from the trader into the PoolManager.
-            cIn.settle(poolManager, sender, grossInRaw, /*burnClaim=*/ false);
+            // 3. Branch out exact-input / exact-output
+            if (isExactInput) {
+                // 3A. Exact-input branch: Calculate Output
+                grossInputAmount = uint256(-int256(params.amountSpecified));
+                fee = grossInputAmount * syntheticSwapFee / PRECISION_DIVISOR;
+                netInputAmount = grossInputAmount - fee;
+                netOutputAmount =
+                    yoloOracle.getAssetPrice(tokenIn) * netInputAmount / yoloOracle.getAssetPrice(tokenOut);
+            } else {
+                // 3B. Exact-output branch: Calculate Input
+                netOutputAmount = uint256(int256(params.amountSpecified));
+                netInputAmount =
+                    yoloOracle.getAssetPrice(tokenOut) * netOutputAmount / yoloOracle.getAssetPrice(tokenIn);
+                uint256 numerator = netInputAmount * syntheticSwapFee;
+                uint256 denominator = PRECISION_DIVISOR - syntheticSwapFee;
 
-            // 5. Mint fee (claim-tokens) straight to treasury.
-            cIn.take(poolManager, treasury, feeRaw, /*mintClaim=*/ true);
+                fee = (numerator + denominator - 1) / denominator;
+                grossInputAmount = netInputAmount + fee;
+            }
 
-            // 6. Take the net amount into the hook, then burn underlying.
-            cIn.take(poolManager, address(this), netInRaw, /*mintClaim=*/ true);
-            IYoloSyntheticAsset(tokenIn).burn(address(this), netInRaw);
+            // 4. Pull the amount from the user into PoolManager
+            cIn.take(poolManager, address(this), netInputAmount, true);
 
-            // 7. Oracle conversion → how much of tokenOut to mint.
-            uint256 priceIn = yoloOracle.getAssetPrice(tokenIn); // 8 dec oracle units
-            uint256 priceOut = yoloOracle.getAssetPrice(tokenOut);
-            // uint256 usdValue = netInRaw * priceIn; // keep full precision
-            // uint256 amountOutRaw = usdValue / priceOut; // floor-division is fine
-            uint256 amountOutRaw = FullMath.mulDiv(netInRaw, priceIn, priceOut);
+            // 5. Pull fee to treasury if fee is non-zero
+            if (fee > 0) {
+                cIn.take(poolManager, treasury, fee, true);
+            }
 
-            // 8. Mint the output synthetic asset to the trader.
-            IYoloSyntheticAsset(tokenOut).mint(sender, amountOutRaw);
+            // 6. Mint assets that needs to be sent to user, and settle with PoolManager
+            IYoloSyntheticAsset(tokenOut).mint(address(this), netOutputAmount);
+            cOut.settle(poolManager, address(this), netOutputAmount, false);
 
-            // 9. Cancel the swap delta so PoolManager skips its own math.
-            beforeSwapDelta = toBeforeSwapDelta(
-                int128(-params.amountSpecified), // specified leg
-                int128(params.amountSpecified) // “other” leg
+            // 6A. We cant pull and burn the asset in beforeSwap, that's why we need to burn it in afterSwap
+            assetToBurn = tokenIn;
+            amountToBurn = netInputAmount;
+
+            emit SyntheticSwapExecuted(
+                poolId, sender, sender, params.zeroForOne, tokenIn, grossInputAmount, tokenOut, netOutputAmount, fee
             );
 
-            // 10. Emit Uniswap-V4-style HookSwap event.
-            uint128 in128 = uint128(grossInRaw); // safe: synthetic caps << 2¹²⁸
-            uint128 out128 = uint128(amountOutRaw);
-            uint128 fee128 = uint128(feeRaw);
+            // 7. Construct BeforeSwapDelta
+            int128 dSpecified;
+            int128 dUnspecified;
+
+            if (params.amountSpecified < 0) {
+                // Exact Input
+                dSpecified = int128(uint128(grossInputAmount)); // Positive
+                dUnspecified = -int128(uint128(netOutputAmount)); // Negative
+            } else {
+                // Exact Output
+                dSpecified = -int128(uint128(grossInputAmount)); // negative
+                dUnspecified = int128(uint128(netOutputAmount)); // positive
+            }
+
+            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
+
+            // 8. Emit HookSwap event based on Uniswap V4 format
+
+            uint128 in128 = uint128(grossInputAmount);
+            uint128 out128 = uint128(netOutputAmount);
+            uint128 fee128 = uint128(fee);
 
             int128 amount0;
             int128 amount1;
@@ -1473,17 +1533,17 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             uint128 fee1;
 
             if (params.zeroForOne) {
-                // token0 → token1
+                // token0  →  token1
                 amount0 = int128(in128); // user pays token0
                 amount1 = -int128(out128); // user receives token1
-                fee0 = fee128; // fee in token0
+                fee0 = fee128; // fee taken in token0
                 fee1 = 0;
             } else {
-                // token1 → token0
+                // token1  →  token0
                 amount0 = -int128(out128); // user receives token0
                 amount1 = int128(in128); // user pays token1
                 fee0 = 0;
-                fee1 = fee128; // fee in token1
+                fee1 = fee128; // fee taken in token1
             }
 
             emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
@@ -1501,6 +1561,24 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         BalanceDelta, // delta    (unused)
         bytes calldata // hookData (unused)
     ) internal override returns (bytes4, int128) {
+        // Burn synthetic swap's pulled asset if there is any
+        // if (assetToBurn != address(0)) {
+        // Currency c = Currency.wrap(assetToBurn);
+        // poolManager.sync(c);
+        // poolManager.take(c, address(this), amountToBurn);
+        // require(IERC20Metadata(assetToBurn).balanceOf(address(poolManager)) == 0, "PoolManager has token");
+        // require(IERC20Metadata(assetToBurn).balanceOf(address(poolManager)) != 0, "PoolManager does not have token");
+        // poolManager.burn(address(this), c.toId(), amountToBurn);
+        // IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
+        //     c.settle(poolManager, address(this), amountToBurn, true);
+        //     c.take(poolManager, address(this), amountToBurn, false);
+
+        // c.settle(poolManager, address(this), amountToBurn, true);
+        // c.take(poolManager, address(this), amountToBurn, true);
+        //     // IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
+        //     assetToBurn = address(0);
+        //     amountToBurn = 0;
+        // }
         // return our external afterSwap selector and “zero” delta
         return (this.afterSwap.selector, int128(0));
     }
