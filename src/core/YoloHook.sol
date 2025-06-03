@@ -154,8 +154,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     /*----- Synthetic Swap Placeholders -----*/
     // => To be used in afterSwap to burn the pulled YoloAssets after settlement
-    address private assetToBurn;
-    uint256 private amountToBurn;
+    address public assetToBurn;
+    uint256 public amountToBurn;
 
     uint256 private USDC_SCALE_UP; // Make sure USDC is scaled up to 18 decimals
 
@@ -345,6 +345,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__InvalidSeizeAmount();
     error YoloHook__ExceedsFlashLoanCap();
     error YoloHook__NoPendingBurns();
+    error CustomRevert__uint256(uint256 num);
+    error CustomRevert__int256(int256 num);
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -993,16 +995,11 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         emit BatchFlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
     }
 
-    // function burnPendings() public {
-    //     if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
+    function burnPendings() public {
+        if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
 
-    //     Currency c = Currency.wrap(assetToBurn);
-    //     c.take(poolManager, address(this), amountToBurn, )
-
-    //     assetToBurn = address(0);
-    //     amountToBurn = 0;
-
-    // }
+        poolManager.unlock(abi.encode(CallbackData(2, "0x")));
+    }
 
     // ******************************//
     // *** ANCHOR POOL FUNCTIONS *** //
@@ -1191,6 +1188,14 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
 
             return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
+        } else if (action == 2) {
+            // Case C: Burn pending burnt tokens
+            Currency c = Currency.wrap(assetToBurn);
+            c.settle(poolManager, address(this), amountToBurn, true);
+            c.take(poolManager, address(this), amountToBurn, false);
+            IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
+            assetToBurn = address(0);
+            amountToBurn = 0;
         } else {
             revert YoloHook__UnknownUnlockActionError();
         }
@@ -1304,6 +1309,17 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        // Burn previous pending tokens
+        if (assetToBurn != address(0)) {
+            // Burn previous pending burnt tokens
+            Currency c = Currency.wrap(assetToBurn);
+            c.settle(poolManager, address(this), amountToBurn, true);
+            c.take(poolManager, address(this), amountToBurn, false);
+            IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
+            assetToBurn = address(0);
+            amountToBurn = 0;
+        }
+
         // Determine and examine the pool
         bytes32 poolId = PoolId.unwrap(key.toId());
 
@@ -1477,7 +1493,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 // 3B. Exact-output branch: Calculate Input
                 netOutputAmount = uint256(int256(params.amountSpecified));
                 netInputAmount =
-                    yoloOracle.getAssetPrice(tokenOut) * netOutputAmount / yoloOracle.getAssetPrice(tokenIn);
+                    yoloOracle.getAssetPrice(tokenOut) * netOutputAmount / yoloOracle.getAssetPrice(tokenIn); // =1.4084507\times10^{24}
                 uint256 numerator = netInputAmount * syntheticSwapFee;
                 uint256 denominator = PRECISION_DIVISOR - syntheticSwapFee;
 
@@ -1511,18 +1527,16 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
             if (params.amountSpecified < 0) {
                 // Exact Input
-                dSpecified = int128(uint128(grossInputAmount)); // Positive
-                dUnspecified = -int128(uint128(netOutputAmount)); // Negative
+                dSpecified = int128(uint128(grossInputAmount)); // positive
+                dUnspecified = -int128(uint128(netOutputAmount)); // negative
             } else {
                 // Exact Output
-                dSpecified = -int128(uint128(grossInputAmount)); // negative
-                dUnspecified = int128(uint128(netOutputAmount)); // positive
+                dSpecified = -int128(uint128(netOutputAmount)); // negative
+                dUnspecified = int128(uint128(grossInputAmount)); // positive
             }
-
             beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
 
             // 8. Emit HookSwap event based on Uniswap V4 format
-
             uint128 in128 = uint128(grossInputAmount);
             uint128 out128 = uint128(netOutputAmount);
             uint128 fee128 = uint128(fee);

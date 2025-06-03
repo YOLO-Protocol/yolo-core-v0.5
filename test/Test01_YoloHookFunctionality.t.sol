@@ -892,7 +892,11 @@ contract Test01_YoloHookFunctionality is
         uint256 usyReceived = usyBalAfter - usyBalBefore;
 
         // Verify oracle-based conversion happened
+        // require(IERC20Metadata(yJpyAsset).balanceOf(swapper) == jpyAmount - swapAmount, "PLACEHOLDER A");
+        console.log("PoolManager's JPY Amount: ", IERC20Metadata(yJpyAsset).balanceOf(address(manager)));
         assertTrue(usyReceived > 0, "No USY received");
+        yoloHookProxy.burnPendings();
+        console.log("PoolManager's JPY Amount after burn: ", IERC20Metadata(yJpyAsset).balanceOf(address(manager)));
 
         // Calculate expected amount based on oracle prices
         uint256 jpyPrice = yoloOracle.getAssetPrice(yJpyAsset);
@@ -1157,6 +1161,356 @@ contract Test01_YoloHookFunctionality is
             // Should be within 15% due to stable swap curve
             assertApproxEqRel(usyReceived, expectedOutput, 1.5e17, "Stable swap output off");
         }
+    }
+
+    function test_Test01_Case21_pendingBurnsMechanism() external {
+        console.log("==================== test_Test01_Case21_pendingBurnsMechanism ====================");
+
+        // Setup: Create positions and mint synthetic assets
+        address user = makeAddr("syntheticSwapper");
+        uint256 collateralAmount = 2e18; // 2 WBTC
+        uint256 jpyBorrowAmount = 10_000_000e18; // 10M JPY
+        uint256 krwBorrowAmount = 50_000_000e18; // 50M KRW
+
+        // Setup collateral and borrow both JPY and KRW
+        deal(wbtcAsset, user, collateralAmount);
+        yoloHookProxy.setPairConfig(wbtcAsset, yJpyAsset, 500, 8000, 500);
+        yoloHookProxy.setPairConfig(wbtcAsset, yKrwAsset, 500, 8000, 500);
+
+        vm.startPrank(user);
+        IERC20(wbtcAsset).approve(address(yoloHookProxy), collateralAmount);
+
+        // Borrow JPY with half collateral
+        yoloHookProxy.borrow(yJpyAsset, jpyBorrowAmount, wbtcAsset, 1e18);
+
+        // Borrow KRW with other half
+        yoloHookProxy.borrow(yKrwAsset, krwBorrowAmount, wbtcAsset, 1e18);
+
+        // Test 1: First swap creates pending burn
+        console.log("\n--- Test 1: First swap creates pending burn ---");
+
+        // Check initial states
+        assertEq(yoloHookProxy.assetToBurn(), address(0), "No pending burn initially");
+        assertEq(yoloHookProxy.amountToBurn(), 0, "No pending amount initially");
+
+        // Swap yJPY -> USY
+        uint256 swapAmount = 1_000_000e18; // 1M JPY
+        IERC20(yJpyAsset).approve(address(swapRouter), swapAmount);
+
+        bool jpyIsToken0 = yJpyAsset < address(yoloHookProxy.anchor());
+        PoolKey memory jpyUsyKey = PoolKey({
+            currency0: Currency.wrap(jpyIsToken0 ? yJpyAsset : address(yoloHookProxy.anchor())),
+            currency1: Currency.wrap(jpyIsToken0 ? address(yoloHookProxy.anchor()) : yJpyAsset),
+            fee: 0,
+            tickSpacing: 1,
+            hooks: IHooks(address(yoloHookProxy))
+        });
+
+        SwapParams memory sp1 =
+            SwapParams({zeroForOne: jpyIsToken0, amountSpecified: -int256(swapAmount), sqrtPriceLimitX96: 0});
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Track balances before swap
+        uint256 jpyBalBefore = IERC20(yJpyAsset).balanceOf(user);
+        uint256 usyBalBefore = IERC20(address(yoloHookProxy.anchor())).balanceOf(user);
+        uint256 jpySupplyBefore = IYoloSyntheticAsset(yJpyAsset).totalSupply();
+
+        // Execute swap
+        swapRouter.swap(jpyUsyKey, sp1, settings, "");
+
+        // Verify pending burn is set
+        assertEq(yoloHookProxy.assetToBurn(), yJpyAsset, "JPY should be pending burn");
+        uint256 expectedPendingAmount = swapAmount - (swapAmount * yoloHookProxy.syntheticSwapFee() / 10000);
+        assertEq(yoloHookProxy.amountToBurn(), expectedPendingAmount, "Pending amount incorrect");
+
+        // Verify swap executed correctly
+        assertEq(IERC20(yJpyAsset).balanceOf(user), jpyBalBefore - swapAmount, "JPY not deducted");
+        assertGt(IERC20(address(yoloHookProxy.anchor())).balanceOf(user), usyBalBefore, "USY not received");
+
+        // Verify JPY hasn't been burned yet
+        assertEq(IYoloSyntheticAsset(yJpyAsset).totalSupply(), jpySupplyBefore, "JPY burned too early");
+
+        // Test 2: Second swap burns pending and creates new pending
+        console.log("\n--- Test 2: Second swap burns previous pending and creates new ---");
+
+        // Now swap KRW -> USY
+        uint256 krwSwapAmount = 5_000_000e18; // 5M KRW
+        IERC20(yKrwAsset).approve(address(swapRouter), krwSwapAmount);
+
+        bool krwIsToken0 = yKrwAsset < address(yoloHookProxy.anchor());
+        PoolKey memory krwUsyKey = PoolKey({
+            currency0: Currency.wrap(krwIsToken0 ? yKrwAsset : address(yoloHookProxy.anchor())),
+            currency1: Currency.wrap(krwIsToken0 ? address(yoloHookProxy.anchor()) : yKrwAsset),
+            fee: 0,
+            tickSpacing: 1,
+            hooks: IHooks(address(yoloHookProxy))
+        });
+
+        SwapParams memory sp2 =
+            SwapParams({zeroForOne: krwIsToken0, amountSpecified: -int256(krwSwapAmount), sqrtPriceLimitX96: 0});
+
+        uint256 krwSupplyBefore = IYoloSyntheticAsset(yKrwAsset).totalSupply();
+
+        // Execute second swap
+        swapRouter.swap(krwUsyKey, sp2, settings, "");
+
+        // Verify previous pending (JPY) was burned
+        assertEq(
+            IYoloSyntheticAsset(yJpyAsset).totalSupply(),
+            jpySupplyBefore - expectedPendingAmount,
+            "JPY not burned correctly"
+        );
+
+        // Verify new pending (KRW) is set
+        assertEq(yoloHookProxy.assetToBurn(), yKrwAsset, "KRW should be new pending burn");
+        uint256 expectedKrwPending = krwSwapAmount - (krwSwapAmount * yoloHookProxy.syntheticSwapFee() / 10000);
+        assertEq(yoloHookProxy.amountToBurn(), expectedKrwPending, "KRW pending amount incorrect");
+
+        // Verify KRW hasn't been burned yet
+        assertEq(IYoloSyntheticAsset(yKrwAsset).totalSupply(), krwSupplyBefore, "KRW burned too early");
+
+        // Test 3: Manual burn via burnPendings()
+        console.log("\n--- Test 3: Manual burn via burnPendings() ---");
+
+        // Call burnPendings() to manually burn the pending KRW
+        yoloHookProxy.burnPendings();
+
+        // Verify KRW was burned
+        assertEq(
+            IYoloSyntheticAsset(yKrwAsset).totalSupply(),
+            krwSupplyBefore - expectedKrwPending,
+            "KRW not burned via burnPendings"
+        );
+
+        // Verify pending is cleared
+        assertEq(yoloHookProxy.assetToBurn(), address(0), "Pending burn not cleared");
+        assertEq(yoloHookProxy.amountToBurn(), 0, "Pending amount not cleared");
+
+        // Test 4: Calling burnPendings() with no pending should revert
+        console.log("\n--- Test 4: burnPendings() reverts when no pending ---");
+
+        vm.expectRevert(YoloHook.YoloHook__NoPendingBurns.selector);
+        yoloHookProxy.burnPendings();
+
+        vm.stopPrank();
+    }
+
+    function test_Test01_Case22_pendingBurnsEdgeCases() external {
+        console.log("==================== test_Test01_Case22_pendingBurnsEdgeCases ====================");
+
+        // Setup users and initial positions
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+
+        // Fund both users
+        deal(wbtcAsset, user1, 2e18);
+        deal(wbtcAsset, user2, 2e18);
+
+        yoloHookProxy.setPairConfig(wbtcAsset, yJpyAsset, 500, 8000, 500);
+        yoloHookProxy.setPairConfig(wbtcAsset, yKrwAsset, 500, 8000, 500);
+        yoloHookProxy.setPairConfig(wbtcAsset, yGoldAsset, 500, 8000, 500);
+
+        // Both users borrow different assets
+        vm.startPrank(user1);
+        IERC20(wbtcAsset).approve(address(yoloHookProxy), 2e18);
+        yoloHookProxy.borrow(yJpyAsset, 10_000_000e18, wbtcAsset, 1e18);
+        yoloHookProxy.borrow(yKrwAsset, 50_000_000e18, wbtcAsset, 1e18);
+        vm.stopPrank();
+
+        vm.startPrank(user2);
+        IERC20(wbtcAsset).approve(address(yoloHookProxy), 2e18);
+        // Fixed: Borrow a reasonable amount: 2 WBTC * $104k * 80% LTV / $3201 per oz ≈ 52 oz of gold
+        yoloHookProxy.borrow(yGoldAsset, 50e18, wbtcAsset, 2e18); // 50 oz of gold (safe amount)
+        vm.stopPrank();
+
+        // Test 1: Rapid successive swaps from different users
+        console.log("\n--- Test 1: Rapid successive swaps ---");
+
+        // User1 swaps JPY -> USY
+        vm.startPrank(user1);
+        uint256 jpySwapAmount = 1_000_000e18;
+        IERC20(yJpyAsset).approve(address(swapRouter), jpySwapAmount);
+
+        bool jpyIsToken0 = yJpyAsset < address(yoloHookProxy.anchor());
+        PoolKey memory jpyKey = PoolKey({
+            currency0: Currency.wrap(jpyIsToken0 ? yJpyAsset : address(yoloHookProxy.anchor())),
+            currency1: Currency.wrap(jpyIsToken0 ? address(yoloHookProxy.anchor()) : yJpyAsset),
+            fee: 0,
+            tickSpacing: 1,
+            hooks: IHooks(address(yoloHookProxy))
+        });
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        uint256 jpySupplyBefore = IYoloSyntheticAsset(yJpyAsset).totalSupply();
+
+        swapRouter.swap(
+            jpyKey,
+            SwapParams({zeroForOne: jpyIsToken0, amountSpecified: -int256(jpySwapAmount), sqrtPriceLimitX96: 0}),
+            settings,
+            ""
+        );
+
+        uint256 jpyPendingAmount = jpySwapAmount - (jpySwapAmount * yoloHookProxy.syntheticSwapFee() / 10000);
+        vm.stopPrank();
+
+        // Immediately, User2 swaps GOLD -> USY (this should burn pending JPY)
+        vm.startPrank(user2);
+        uint256 goldSwapAmount = 10e18; // 10 oz (reasonable amount)
+        IERC20(yGoldAsset).approve(address(swapRouter), goldSwapAmount);
+
+        bool goldIsToken0 = yGoldAsset < address(yoloHookProxy.anchor());
+        PoolKey memory goldKey = PoolKey({
+            currency0: Currency.wrap(goldIsToken0 ? yGoldAsset : address(yoloHookProxy.anchor())),
+            currency1: Currency.wrap(goldIsToken0 ? address(yoloHookProxy.anchor()) : yGoldAsset),
+            fee: 0,
+            tickSpacing: 1,
+            hooks: IHooks(address(yoloHookProxy))
+        });
+
+        uint256 goldSupplyBefore = IYoloSyntheticAsset(yGoldAsset).totalSupply();
+
+        swapRouter.swap(
+            goldKey,
+            SwapParams({zeroForOne: goldIsToken0, amountSpecified: -int256(goldSwapAmount), sqrtPriceLimitX96: 0}),
+            settings,
+            ""
+        );
+        vm.stopPrank();
+
+        // Verify JPY was burned and GOLD is now pending
+        assertEq(
+            IYoloSyntheticAsset(yJpyAsset).totalSupply(),
+            jpySupplyBefore - jpyPendingAmount,
+            "JPY not burned on second swap"
+        );
+        assertEq(yoloHookProxy.assetToBurn(), yGoldAsset, "GOLD should be pending");
+        assertEq(IYoloSyntheticAsset(yGoldAsset).totalSupply(), goldSupplyBefore, "GOLD burned too early");
+
+        // Test 2: Swap with same asset that's pending (should burn and create new pending)
+        console.log("\n--- Test 2: Swap same asset that's pending ---");
+
+        vm.startPrank(user2);
+        uint256 secondGoldSwap = 5e18; // 5 oz
+        IERC20(yGoldAsset).approve(address(swapRouter), secondGoldSwap);
+
+        uint256 firstGoldPending = goldSwapAmount - (goldSwapAmount * yoloHookProxy.syntheticSwapFee() / 10000);
+
+        swapRouter.swap(
+            goldKey,
+            SwapParams({zeroForOne: goldIsToken0, amountSpecified: -int256(secondGoldSwap), sqrtPriceLimitX96: 0}),
+            settings,
+            ""
+        );
+
+        // Verify first pending was burned and new pending created
+        assertEq(
+            IYoloSyntheticAsset(yGoldAsset).totalSupply(),
+            goldSupplyBefore - firstGoldPending,
+            "First GOLD pending not burned"
+        );
+
+        uint256 secondGoldPending = secondGoldSwap - (secondGoldSwap * yoloHookProxy.syntheticSwapFee() / 10000);
+        assertEq(yoloHookProxy.amountToBurn(), secondGoldPending, "New pending amount incorrect");
+        vm.stopPrank();
+
+        // Test 3: Anchor pool swap clears pending burns
+        console.log("\n--- Test 3: Anchor pool swap clears pending ---");
+
+        // First, ensure we have liquidity in anchor pool
+        address lpProvider = makeAddr("lpProvider");
+        IERC20Metadata usdc = IERC20Metadata(symbolToDeployedAsset["USDC"]);
+        IERC20Metadata usy = IERC20Metadata(address(yoloHookProxy.anchor()));
+
+        uint256 usdcLiquidity = usdc.decimals() == 18 ? 100_000e18 : 100_000e6;
+        uint256 usyLiquidity = 100_000e18;
+
+        deal(address(usdc), lpProvider, usdcLiquidity);
+        deal(address(usy), lpProvider, usyLiquidity);
+
+        vm.startPrank(lpProvider);
+        usdc.approve(address(yoloHookProxy), type(uint256).max);
+        usy.approve(address(yoloHookProxy), type(uint256).max);
+        yoloHookProxy.addLiquidity(usdcLiquidity, usyLiquidity, 0, lpProvider);
+        vm.stopPrank();
+
+        // Record GOLD supply before anchor swap
+        uint256 goldSupplyBeforeAnchor = IYoloSyntheticAsset(yGoldAsset).totalSupply();
+
+        // User1 does USDC -> USY swap (anchor pool)
+        vm.startPrank(user1);
+        uint256 usdcSwapAmount = usdc.decimals() == 18 ? 1000e18 : 1000e6;
+        deal(address(usdc), user1, usdcSwapAmount);
+        usdc.approve(address(swapRouter), usdcSwapAmount);
+
+        (PoolKey memory anchorKey, bool usdcIs0) = _anchorKey();
+
+        swapRouter.swap(
+            anchorKey,
+            SwapParams({zeroForOne: usdcIs0, amountSpecified: -int256(usdcSwapAmount), sqrtPriceLimitX96: 0}),
+            settings,
+            ""
+        );
+        vm.stopPrank();
+
+        // Verify pending GOLD was burned during anchor swap
+        assertEq(
+            IYoloSyntheticAsset(yGoldAsset).totalSupply(),
+            goldSupplyBeforeAnchor - secondGoldPending,
+            "Pending GOLD not burned on anchor swap"
+        );
+        assertEq(yoloHookProxy.assetToBurn(), address(0), "Pending not cleared");
+        assertEq(yoloHookProxy.amountToBurn(), 0, "Pending amount not cleared");
+
+        // Test 4: Exact output swap creates correct pending
+        console.log("\n--- Test 4: Exact output swap pending burns ---");
+
+        vm.startPrank(user1);
+        // Swap to get exactly 1000 USY from KRW
+        uint256 exactUsyOut = 1000e18;
+
+        // Approve a large amount since we don't know exact input needed
+        IERC20(yKrwAsset).approve(address(swapRouter), type(uint256).max);
+
+        bool krwIsToken0 = yKrwAsset < address(yoloHookProxy.anchor());
+        PoolKey memory krwKey = PoolKey({
+            currency0: Currency.wrap(krwIsToken0 ? yKrwAsset : address(yoloHookProxy.anchor())),
+            currency1: Currency.wrap(krwIsToken0 ? address(yoloHookProxy.anchor()) : yKrwAsset),
+            fee: 0,
+            tickSpacing: 1,
+            hooks: IHooks(address(yoloHookProxy))
+        });
+
+        uint256 krwBalBefore = IERC20(yKrwAsset).balanceOf(user1);
+
+        swapRouter.swap(
+            krwKey,
+            SwapParams({zeroForOne: krwIsToken0, amountSpecified: int256(exactUsyOut), sqrtPriceLimitX96: 0}),
+            settings,
+            ""
+        );
+
+        // Calculate how much KRW was used
+        uint256 krwUsed = krwBalBefore - IERC20(yKrwAsset).balanceOf(user1);
+
+        // Pending should be the net amount (gross - fee)
+        uint256 expectedNetKrw = krwUsed - (krwUsed * yoloHookProxy.syntheticSwapFee() / 10000);
+        assertEq(yoloHookProxy.assetToBurn(), yKrwAsset, "KRW should be pending");
+
+        // For exact output, the pending amount calculation is different
+        // The gross input already includes the fee, so we need to calculate the net amount differently
+        uint256 krwPrice = yoloOracle.getAssetPrice(yKrwAsset);
+        uint256 usyPrice = yoloOracle.getAssetPrice(address(yoloHookProxy.anchor()));
+        uint256 netInputAmount = usyPrice * exactUsyOut / krwPrice;
+
+        assertEq(yoloHookProxy.amountToBurn(), netInputAmount, "Exact output pending incorrect");
+
+        vm.stopPrank();
+
+        console.log("\n--- All edge cases handled correctly ---");
     }
 
     // ************************ //
