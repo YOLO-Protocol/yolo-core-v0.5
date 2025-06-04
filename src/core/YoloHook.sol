@@ -1309,7 +1309,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // Burn previous pending tokens
+        // A. Burn previous pending burn tokens
         if (assetToBurn != address(0)) {
             // Burn previous pending burnt tokens
             Currency c = Currency.wrap(assetToBurn);
@@ -1320,7 +1320,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             amountToBurn = 0;
         }
 
-        // Determine and examine the pool
+        // B. Determine the pool and the swap context
         bytes32 poolId = PoolId.unwrap(key.toId());
 
         // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
@@ -1331,6 +1331,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         Currency currencyOut;
         address tokenInAddr;
         address tokenOutAddr;
+
+        // C. Branch out path for anchor pool and other synthetic pools
 
         if (isAnchorPool[poolId]) {
             // A. Execute stable swap if it's anchor pool
