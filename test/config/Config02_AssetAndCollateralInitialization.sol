@@ -62,7 +62,17 @@ contract Config02_AssetAndCollateralInitialization is Config01_OraclesAndAssets 
                 "Yolo NVDIA",
                 "yNVDA",
                 18,
-                MockOracleConfig("NVDIA / USD", 134 * 1e8),
+                MockOracleConfig("NVDA / USD", 134 * 1e8),
+                YoloAssetConfiguration(10_000 * 1e18, 10_000 * 1e18),
+                address(0)
+            )
+        );
+        yoloAssetsArray.push(
+            YoloAssets(
+                "Yolo TESLA",
+                "yTSLA",
+                18,
+                MockOracleConfig("TSLA / USD", 344.27 * 1e8),
                 YoloAssetConfiguration(10_000 * 1e18, 10_000 * 1e18),
                 address(0)
             )
