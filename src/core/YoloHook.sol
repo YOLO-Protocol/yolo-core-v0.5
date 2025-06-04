@@ -75,15 +75,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 liquidity; // LP tokens burnt
     }
 
-    struct SwapCallbackData {
-        address sender;
-        address tokenIn;
-        uint256 amountInFromUser;
-        address tokenOut;
-        uint256 amountOutToUser;
-        bool zeroForOne;
-    }
-
     struct YoloAssetConfiguration {
         address yoloAssetAddress;
         uint256 maxMintableCap; // 0 == Pause
@@ -177,7 +168,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     mapping(address => mapping(address => CollateralToYoloAssetConfiguration)) public pairConfigs; // Pair Configs of (collateral => asset)
 
     /*----- User Positions -----*/
-    mapping(address => UserPosition[]) userAllPositions;
+    // mapping(address => UserPosition[]) userAllPositions;
     mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
     mapping(address => UserPositionKey[]) public userPositionKeys;
 
@@ -200,42 +191,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         int128 amount1,
         uint128 hookLPfeeAmount0,
         uint128 hookLPfeeAmount1
-    );
-
-    event AnchorLiquidityAdded(
-        address indexed sender,
-        address indexed receiver,
-        uint256 usdcAmount,
-        uint256 usyAmount,
-        uint256 liquidityMintedToUser
-    );
-
-    event AnchorLiquidityRemoved(
-        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidityBurned
-    );
-
-    event AnchorSwapExecuted(
-        bytes32 indexed poolId,
-        address indexed sender,
-        address indexed receiver,
-        bool zeroForOne,
-        address tokenIn,
-        uint256 amountIn,
-        address tokenOut,
-        uint256 amountOut,
-        uint256 feeAmount
-    );
-
-    event SyntheticSwapExecuted(
-        bytes32 indexed poolId,
-        address indexed sender,
-        address indexed receiver,
-        bool zeroForOne,
-        address tokenIn,
-        uint256 amountIn,
-        address tokenOut,
-        uint256 amountOut,
-        uint256 feeAmount
     );
 
     event UpdateFlashLoanFee(uint256 newFlashLoanFee, uint256 oldFlashLoanFee);
@@ -261,8 +216,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     );
 
     event PairDropped(address collateral, address yoloAsset);
-
-    event PriceSourceUpdated(address indexed asset, address newPriceSource, address oldPriceSource);
 
     event Borrowed(
         address indexed user,
@@ -301,11 +254,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 collateralSeized
     );
 
-    event FlashLoanExecuted(address flashBorrower, address yoloAsset, uint256 amount, uint256 fee);
+    // event FlashLoanExecuted(address flashBorrower, address yoloAsset, uint256 amount, uint256 fee);
 
-    event BatchFlashLoanExecuted(
-        address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees
-    );
+    event FlashLoanExecuted(address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees);
 
     // ***************//
     // *** ERRORS *** //
@@ -440,30 +391,27 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // *** ADMIN FUNCTIONS *** //
     // *********************** //
 
-    function pause() external onlyOwner {
-        _pause();
+    function pause(bool _toPause) external onlyOwner {
+        if (_toPause) _pause();
+        else _unpause();
     }
 
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    function setFlashLoanFee(uint256 _newFlashLoanFee) external onlyOwner {
-        uint256 oldFlashLoanFee = flashLoanFee;
-        flashLoanFee = _newFlashLoanFee;
-        emit UpdateFlashLoanFee(_newFlashLoanFee, oldFlashLoanFee);
-    }
-
-    function setSyntheticSwapFee(uint256 _newSyntheticSwapFee) external onlyOwner {
-        uint256 oldSyntheticSwapFee = syntheticSwapFee;
-        syntheticSwapFee = _newSyntheticSwapFee;
-        emit UpdateSyntheticSwapFee(_newSyntheticSwapFee, oldSyntheticSwapFee);
-    }
-
-    function setStableSwapFee(uint256 _newStableSwapFee) external onlyOwner {
-        uint256 oldStableSwapfee = stableSwapFee;
-        stableSwapFee = _newStableSwapFee;
-        emit UpdateStableSwapFee(_newStableSwapFee, oldStableSwapfee);
+    function setFee(uint8 _action, uint256 _newFee) external onlyOwner {
+        if (_action == 0) {
+            uint256 oldFlashLoanFee = flashLoanFee;
+            flashLoanFee = _newFee;
+            emit UpdateFlashLoanFee(flashLoanFee, oldFlashLoanFee);
+        } else if (_action == 1) {
+            uint256 oldSyntheticSwapFee = syntheticSwapFee;
+            syntheticSwapFee = _newFee;
+            emit UpdateSyntheticSwapFee(syntheticSwapFee, oldSyntheticSwapFee);
+        } else if (_action == 2) {
+            uint256 oldStableSwapfee = stableSwapFee;
+            stableSwapFee = _newFee;
+            emit UpdateStableSwapFee(stableSwapFee, oldStableSwapfee);
+        } else {
+            revert();
+        }
     }
 
     function createNewYoloAsset(string calldata _name, string calldata _symbol, uint8 _decimals, address _priceSource)
@@ -571,21 +519,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         _removeFromArray(yoloAssetsToSupportedCollateral[_yoloAsset], _collateral);
 
         emit PairDropped(_collateral, _yoloAsset);
-    }
-
-    function setNewPriceSource(address _asset, address _priceSource) external onlyOwner {
-        if (_priceSource == address(0)) revert YoloHook__InvalidPriceSource();
-
-        address oldPriceSource = yoloOracle.getSourceOfAsset(_asset);
-
-        address[] memory assets = new address[](1);
-        address[] memory priceSources = new address[](1);
-        assets[0] = _asset;
-        priceSources[0] = _priceSource;
-
-        yoloOracle.setAssetSources(assets, priceSources);
-
-        emit PriceSourceUpdated(_asset, _priceSource, oldPriceSource);
     }
 
     // ***************************** //
@@ -898,46 +831,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
-     * @dev     Executes a single flash loan for a YoloAsset.
-     * @param   _yoloAsset  The address of the YoloAsset to borrow.
-     * @param   _amount     The amount of the asset to borrow.
-     * @param   _data       The data to be passed to the IFlashBorrower contract for execution
-     */
-    function simpleFlashLoan(address _yoloAsset, uint256 _amount, bytes calldata _data)
-        external
-        nonReentrant
-        whenNotPaused
-    {
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-
-        // Check if yolo asset is paused
-        YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
-        if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
-
-        // Check if flash loan amount exceeds the cap
-        if (assetConfig.maxFlashLoanableAmount > 0 && _amount > assetConfig.maxFlashLoanableAmount) {
-            revert YoloHook__ExceedsFlashLoanCap();
-        }
-
-        uint256 fee = (_amount * flashLoanFee) / PRECISION_DIVISOR;
-        uint256 totalRepayment = _amount + fee;
-
-        // Transfer the flash loan to the borrower
-        IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _amount);
-
-        // Call the borrower's callback function
-        IFlashBorrower(msg.sender).onFlashLoan(msg.sender, _yoloAsset, _amount, fee, _data);
-
-        // Ensure repayment
-        IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, totalRepayment);
-
-        // Mint fee to protocol treasury
-        IYoloSyntheticAsset(_yoloAsset).mint(treasury, fee);
-
-        emit FlashLoanExecuted(msg.sender, _yoloAsset, _amount, fee);
-    }
-
-    /**
      * @dev     Executes a batch flash loan for multiple YoloAssets.
      * @param   _yoloAssets  Array of YoloAsset addresses to borrow.
      * @param   _amounts     Array of amounts to borrow per asset.
@@ -986,13 +879,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             IYoloSyntheticAsset(_yoloAssets[i]).mint(treasury, fees[i]);
         }
 
-        emit BatchFlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
+        emit FlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
     }
 
     function burnPendings() public {
-        if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
-
-        poolManager.unlock(abi.encode(CallbackData(2, "0x")));
+        if (assetToBurn == address(0)) return;
+        poolManager.unlock(abi.encode(CallbackData(2, "")));
     }
 
     // ******************************//
@@ -1146,7 +1038,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 anchorPoolLPBalance[receiver] += liquidity;
                 anchorPoolLiquiditySupply += liquidity;
             }
-            emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
+            // emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
 
             return abi.encode(sender, receiver, usdcUsed, usyUsed, liquidity);
         } else if (action == 1) {
@@ -1176,7 +1068,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             // For USY: Burn our claim tokens and give real USY to user
             usyCurrency.take(poolManager, receiver, usyAmount, false);
 
-            emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
+            // emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
 
             return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
         } else if (action == 2) {
@@ -1260,30 +1152,30 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         });
     }
 
-    /**
-     * @notice  Revert to avoid directly adding liquidity to the PoolManager.
-     */
-    function beforeModifyLiquidity(PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        external
-        pure
-        returns (bytes4)
-    {
-        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook__MustAddLiquidityThroughHook();
-    }
+    // /**
+    //  * @notice  Revert to avoid directly adding liquidity to the PoolManager.
+    //  */
+    // function beforeModifyLiquidity(PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    //     external
+    //     pure
+    //     returns (bytes4)
+    // {
+    //     // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
+    //     revert YoloHook__MustAddLiquidityThroughHook();
+    // }
 
-    /**
-     * @notice  Revert to avoid directly adding liquidity to the PoolManager.
-     */
-    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        internal
-        pure
-        override
-        returns (bytes4)
-    {
-        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook__MustAddLiquidityThroughHook();
-    }
+    // /**
+    //  * @notice  Revert to avoid directly adding liquidity to the PoolManager.
+    //  */
+    // function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    //     internal
+    //     pure
+    //     override
+    //     returns (bytes4)
+    // {
+    //     // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
+    //     revert YoloHook__MustAddLiquidityThroughHook();
+    // }
 
     /**
      * @notice  Executes stable swap for anchor pool and oracle swap for synthetic asset pools. Return a BalanceDelta
@@ -1301,15 +1193,11 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         bytes32 poolId = PoolId.unwrap(key.toId());
 
         // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
-        BeforeSwapDelta beforeSwapDelta;
+        // BeforeSwapDelta beforeSwapDelta;
 
         // Tokens Instance
         Currency currencyIn;
         Currency currencyOut;
-
-        // Construct BeforeSwapDelta
-        int128 dSpecified;
-        int128 dUnspecified;
 
         // Input-Output Calculation
         uint256 grossInputAmount;
@@ -1381,16 +1269,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             }
 
             // 4. Construct BeforeSwapDelta
-            if (params.amountSpecified < 0) {
-                // Exact Input
-                dSpecified = int128(uint128(grossInputAmount)); // Positive
-                dUnspecified = -int128(uint128(netOutputAmount)); // Negative
-            } else {
-                // Exact Output
-                dSpecified = -int128(uint128(netOutputAmount)); // negative
-                dUnspecified = int128(uint128(grossInputAmount)); // positive
-            }
-            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
+            // beforeSwapDelta = _getBeforeSwapDelta(params.amountSpecified, grossInputAmount, netOutputAmount);
 
             // 5. Currency Settlement
             currencyIn.take(poolManager, address(this), netInputAmount, true);
@@ -1399,49 +1278,19 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             }
             currencyOut.settle(poolManager, address(this), netOutputAmount, true);
 
-            emit AnchorSwapExecuted(
-                poolId,
-                sender,
-                sender,
-                params.zeroForOne,
-                Currency.unwrap(currencyIn),
-                grossInputAmount,
-                Currency.unwrap(currencyOut),
-                netOutputAmount,
-                fee
-            );
-
-            // 6. Emit HookSwap event based on Uniswap V4 format
-
-            uint128 in128 = uint128(grossInputAmount); // safe because grossInputAmount < 2¹²⁸
-            uint128 out128 = uint128(netOutputAmount); // idem
-            uint128 fee128 = uint128(fee);
-
-            int128 amount0;
-            int128 amount1;
-            uint128 fee0;
-            uint128 fee1;
-
-            if (params.zeroForOne) {
-                // token0  →  token1
-                amount0 = int128(in128); // user pays token0
-                amount1 = -int128(out128); // user receives token1
-                fee0 = fee128; // fee taken in token0
-                fee1 = 0;
-            } else {
-                // token1  →  token0
-                amount0 = -int128(out128); // user receives token0
-                amount1 = int128(in128); // user pays token1
-                fee0 = 0;
-                fee1 = fee128; // fee taken in token1
-            }
-
-            emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
-
-            return (this.beforeSwap.selector, beforeSwapDelta, 0);
+            // emit AnchorSwap(
+            //     poolId,
+            //     sender,
+            //     sender,
+            //     params.zeroForOne,
+            //     Currency.unwrap(currencyIn),
+            //     grossInputAmount,
+            //     Currency.unwrap(currencyOut),
+            //     netOutputAmount,
+            //     fee
+            // );
         } else if (isSyntheticPool[poolId]) {
             // Execute stynthetic swap (oracle swap) if it's synthetic pool
-
             // 1. Pick the input / output currencies.
             (currencyIn, currencyOut) =
                 params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
@@ -1487,52 +1336,45 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             assetToBurn = tokenIn;
             amountToBurn = netInputAmount;
 
-            emit SyntheticSwapExecuted(
-                poolId, sender, sender, params.zeroForOne, tokenIn, grossInputAmount, tokenOut, netOutputAmount, fee
-            );
+            // emit SyntheticSwap(
+            //     poolId, sender, sender, params.zeroForOne, tokenIn, grossInputAmount, tokenOut, netOutputAmount, fee
+            // );
 
             // 7. Construct BeforeSwapDelta
-            if (params.amountSpecified < 0) {
-                // Exact Input
-                dSpecified = int128(uint128(grossInputAmount)); // positive
-                dUnspecified = -int128(uint128(netOutputAmount)); // negative
-            } else {
-                // Exact Output
-                dSpecified = -int128(uint128(netOutputAmount)); // negative
-                dUnspecified = int128(uint128(grossInputAmount)); // positive
-            }
-            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
-
-            // 8. Emit HookSwap event based on Uniswap V4 format
-            uint128 in128 = uint128(grossInputAmount);
-            uint128 out128 = uint128(netOutputAmount);
-            uint128 fee128 = uint128(fee);
-
-            int128 amount0;
-            int128 amount1;
-            uint128 fee0;
-            uint128 fee1;
-
-            if (params.zeroForOne) {
-                // token0  →  token1
-                amount0 = int128(in128); // user pays token0
-                amount1 = -int128(out128); // user receives token1
-                fee0 = fee128; // fee taken in token0
-                fee1 = 0;
-            } else {
-                // token1  →  token0
-                amount0 = -int128(out128); // user receives token0
-                amount1 = int128(in128); // user pays token1
-                fee0 = 0;
-                fee1 = fee128; // fee taken in token1
-            }
-
-            emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
-
-            return (this.beforeSwap.selector, beforeSwapDelta, 0);
+            // beforeSwapDelta = _getBeforeSwapDelta(params.amountSpecified, grossInputAmount, netOutputAmount);
         } else {
             revert YoloHook__InvalidPoolId();
         }
+
+        // Emit HookSwap event based on Uniswap V4 format
+        uint128 in128 = uint128(grossInputAmount);
+        uint128 out128 = uint128(netOutputAmount);
+        uint128 fee128 = uint128(fee);
+
+        int128 amount0;
+        int128 amount1;
+        uint128 fee0;
+        uint128 fee1;
+
+        if (params.zeroForOne) {
+            // token0  →  token1
+            amount0 = int128(in128); // user pays token0
+            amount1 = -int128(out128); // user receives token1
+            fee0 = fee128; // fee taken in token0
+            fee1 = 0;
+        } else {
+            // token1  →  token0
+            amount0 = -int128(out128); // user receives token0
+            amount1 = int128(in128); // user pays token1
+            fee0 = 0;
+            fee1 = fee128; // fee taken in token1
+        }
+
+        emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
+
+        return (
+            this.beforeSwap.selector, _getBeforeSwapDelta(params.amountSpecified, grossInputAmount, netOutputAmount), 0
+        );
     }
 
     function _afterSwap(
@@ -1549,12 +1391,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ***********************//
     // *** VIEW FUNCTIONS *** //
     // ********************** //
-    /**
-     * @notice Get anchor pool reserves
-     */
-    function getAnchorReserves() external view returns (uint256 usdcReserve, uint256 usyReserve) {
-        return (totalAnchorReserveUSDC, totalAnchorReserveUSY);
-    }
+    // /**
+    //  * @notice Get anchor pool reserves
+    //  */
+    // function getAnchorReserves() external view returns (uint256 usdcReserve, uint256 usyReserve) {
+    //     return (totalAnchorReserveUSDC, totalAnchorReserveUSY);
+    // }
 
     // /**
     //  * @notice  Calculate optimal liquidity amounts (view function)
@@ -1672,6 +1514,20 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      */
     function _fromWadUSDC(uint256 _wad) internal view returns (uint256) {
         return _wad / USDC_SCALE_UP;
+    }
+
+    // ******************************************//
+    // *** INTERNAL FUNCTIONS - SWAP HELPERS *** //
+    // ***************************************** //
+
+    function _getBeforeSwapDelta(int256 _specified, uint256 _input, uint256 _output)
+        internal
+        returns (BeforeSwapDelta)
+    {
+        // Exact Input
+        if (_specified < 0) return toBeforeSwapDelta(int128(uint128(_input)), -int128(uint128(_output)));
+        // Exact Output
+        else return toBeforeSwapDelta(-int128(uint128(_output)), int128(uint128(_input)));
     }
 
     // **************************************************//
