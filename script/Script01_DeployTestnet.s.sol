@@ -58,6 +58,8 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
     address public wbtcAsset; // Collateral
     address public ptUsdeAsset; // Collateral
 
+    address public usy;
+
     function run() external {
         // A. Load env variables
         string memory rpcUrl = vm.envString("RPC_URL");
@@ -130,6 +132,12 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         (address implementationTargetAddress, bytes32 implementationSalt) =
             HookMiner.find(CREATE2_DEPLOYER, allFlags, type(YoloHook).creationCode, implementationConstructorArgs);
 
+        yoloHookImplementation = new YoloHook{salt: implementationSalt}(address(POOL_MANAGER));
+        require(
+            address(yoloHookImplementation) == implementationTargetAddress,
+            "Script01_DeployTestnet: hook implementation address mismatch"
+        );
+
         console.log("Calculated Implementation Address: ", implementationTargetAddress);
         console.log("Calculated Implementation Salt: ");
         console.logBytes(abi.encodePacked(implementationSalt));
@@ -200,6 +208,8 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             symbolToDeployedAsset["USDC"] // USDC address
         );
         console.log("YoloHook Proxy Owner After Initialize Is: ", yoloHookProxy.owner());
+
+        usy = address(yoloHookProxy.anchor());
 
         // G. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));
@@ -281,7 +291,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         console.log("USY Balance of Deployer: ", IERC20Metadata(address(yoloHookProxy.anchor())).balanceOf(deployer));
 
         // J. Add Liquidity to Anchor Pool
-        address usy = address(yoloHookProxy.anchor());
+        usy = address(yoloHookProxy.anchor());
         address usdc = symbolToDeployedAsset["USDC"];
 
         IERC20Metadata(usy).approve(address(yoloHookProxy), type(uint256).max);
