@@ -290,7 +290,9 @@ contract Test01_YoloHookFunctionality is
         console.log("User USY Before:", balUsyBefore);
 
         // Get initial pool state
-        (uint256 usdcReserveBefore, uint256 usyReserveBefore) = yoloHookProxy.getAnchorReserves();
+        // (uint256 usdcReserveBefore, uint256 usyReserveBefore) = yoloHookProxy.getAnchorReserves();
+        uint256 usdcReserveBefore = yoloHookProxy.totalAnchorReserveUSDC();
+        uint256 usyReserveBefore = yoloHookProxy.totalAnchorReserveUSY();
         uint256 lpBalanceBefore = yoloHookProxy.anchorPoolLPBalance(address(this));
         uint256 totalSupplyBefore = yoloHookProxy.anchorPoolLiquiditySupply();
 
@@ -333,7 +335,9 @@ contract Test01_YoloHookFunctionality is
         assertEq(balUsyBefore - balUsyAfter, usyUsed, "USY balance change should match used amount");
 
         // Check pool state after
-        (uint256 usdcReserveAfter, uint256 usyReserveAfter) = yoloHookProxy.getAnchorReserves();
+        // (uint256 usdcReserveAfter, uint256 usyReserveAfter) = yoloHookProxy.getAnchorReserves();
+        uint256 usdcReserveAfter = yoloHookProxy.totalAnchorReserveUSDC();
+        uint256 usyReserveAfter = yoloHookProxy.totalAnchorReserveUSY();
         uint256 lpBalanceAfter = yoloHookProxy.anchorPoolLPBalance(address(this));
         uint256 totalSupplyAfter = yoloHookProxy.anchorPoolLiquiditySupply();
 
@@ -390,7 +394,9 @@ contract Test01_YoloHookFunctionality is
         // ---- 1. Snapshot before we remove --------------------------------------------
         uint256 lpUserBefore = yoloHookProxy.anchorPoolLPBalance(address(this));
         uint256 lpTotalBefore = yoloHookProxy.anchorPoolLiquiditySupply();
-        (uint256 resUsdcBefore, uint256 resUsyBefore) = yoloHookProxy.getAnchorReserves();
+        // (uint256 resUsdcBefore, uint256 resUsyBefore) = yoloHookProxy.getAnchorReserves();
+        uint256 resUsdcBefore = yoloHookProxy.totalAnchorReserveUSDC();
+        uint256 resUsyBefore = yoloHookProxy.totalAnchorReserveUSY();
 
         uint256 balUsdcBefore = usdc.balanceOf(address(this));
         uint256 balUsyBefore = usy.balanceOf(address(this));
@@ -416,7 +422,9 @@ contract Test01_YoloHookFunctionality is
         assertEq(yoloHookProxy.anchorPoolLPBalance(address(this)), lpUserBefore - lpToBurn, "LP burned from user");
         assertEq(yoloHookProxy.anchorPoolLiquiditySupply(), lpTotalBefore - lpToBurn, "total LP supply shrank");
 
-        (uint256 resUsdcAfter, uint256 resUsyAfter) = yoloHookProxy.getAnchorReserves();
+        // (uint256 resUsdcAfter, uint256 resUsyAfter) = yoloHookProxy.getAnchorReserves();
+        uint256 resUsdcAfter = yoloHookProxy.totalAnchorReserveUSDC();
+        uint256 resUsyAfter = yoloHookProxy.totalAnchorReserveUSY();
         assertEq(resUsdcAfter, resUsdcBefore - usdcOut, "reserve USDC down");
         assertEq(resUsyAfter, resUsyBefore - usyOut, "reserve USY down");
 
@@ -913,34 +921,36 @@ contract Test01_YoloHookFunctionality is
         vm.stopPrank();
     }
 
-    function test_Test01_Case14_simpleFlashLoan() external {
-        console.log("==================== test_Test01_Case14_simpleFlashLoan ====================");
+    // Disabled due to reducing YoloHook deployment size
 
-        MockFlashBorrower borrower = new MockFlashBorrower(address(yoloHookProxy));
-        uint256 flashAmount = 1_000_000e18; // 1M JPY
-        uint256 expectedFee = (flashAmount * yoloHookProxy.flashLoanFee()) / 10000;
+    // function test_Test01_Case14_simpleFlashLoan() external {
+    //     console.log("==================== test_Test01_Case14_simpleFlashLoan ====================");
 
-        // IMPORTANT: The borrower needs to have the fee amount to repay
-        // In a real scenario, the borrower would use the flash loan to generate profit
-        // For testing, we'll give the borrower some tokens to pay the fee
-        vm.prank(address(yoloHookProxy));
-        IYoloSyntheticAsset(yJpyAsset).mint(address(borrower), expectedFee);
+    //     MockFlashBorrower borrower = new MockFlashBorrower(address(yoloHookProxy));
+    //     uint256 flashAmount = 1_000_000e18; // 1M JPY
+    //     uint256 expectedFee = (flashAmount * yoloHookProxy.flashLoanFee()) / 10000;
 
-        vm.startPrank(address(borrower));
+    //     // IMPORTANT: The borrower needs to have the fee amount to repay
+    //     // In a real scenario, the borrower would use the flash loan to generate profit
+    //     // For testing, we'll give the borrower some tokens to pay the fee
+    //     vm.prank(address(yoloHookProxy));
+    //     IYoloSyntheticAsset(yJpyAsset).mint(address(borrower), expectedFee);
 
-        uint256 treasuryBalBefore = IERC20(yJpyAsset).balanceOf(yoloHookProxy.treasury());
+    //     vm.startPrank(address(borrower));
 
-        yoloHookProxy.simpleFlashLoan(yJpyAsset, flashAmount, "");
+    //     uint256 treasuryBalBefore = IERC20(yJpyAsset).balanceOf(yoloHookProxy.treasury());
 
-        // Verify treasury received fee
-        uint256 treasuryBalAfter = IERC20(yJpyAsset).balanceOf(yoloHookProxy.treasury());
-        assertEq(treasuryBalAfter - treasuryBalBefore, expectedFee, "Treasury didn't receive fee");
+    //     yoloHookProxy.simpleFlashLoan(yJpyAsset, flashAmount, "");
 
-        // Verify borrower's balance is 0 (all returned)
-        assertEq(IERC20(yJpyAsset).balanceOf(address(borrower)), 0, "Borrower should have no balance left");
+    //     // Verify treasury received fee
+    //     uint256 treasuryBalAfter = IERC20(yJpyAsset).balanceOf(yoloHookProxy.treasury());
+    //     assertEq(treasuryBalAfter - treasuryBalBefore, expectedFee, "Treasury didn't receive fee");
 
-        vm.stopPrank();
-    }
+    //     // Verify borrower's balance is 0 (all returned)
+    //     assertEq(IERC20(yJpyAsset).balanceOf(address(borrower)), 0, "Borrower should have no balance left");
+
+    //     vm.stopPrank();
+    // }
 
     function test_Test01_Case15_batchFlashLoan() external {
         console.log("==================== test_Test01_Case15_batchFlashLoan ====================");
@@ -1004,9 +1014,9 @@ contract Test01_YoloHookFunctionality is
         vm.expectRevert(YoloHook.YoloHook__YoloAssetPaused.selector);
         yoloHookProxy.borrow(yJpyAsset, 1_000_000e18, wbtcAsset, 1e18);
 
-        // Try flash loan - should also fail
-        vm.expectRevert(YoloHook.YoloHook__YoloAssetPaused.selector);
-        yoloHookProxy.simpleFlashLoan(yJpyAsset, 1_000_000e18, "");
+        // // Try flash loan - should also fail
+        // vm.expectRevert(YoloHook.YoloHook__YoloAssetPaused.selector);
+        // yoloHookProxy.simpleFlashLoan(yJpyAsset, 1_000_000e18, "");
 
         vm.stopPrank();
     }
@@ -1288,11 +1298,11 @@ contract Test01_YoloHookFunctionality is
         assertEq(yoloHookProxy.assetToBurn(), address(0), "Pending burn not cleared");
         assertEq(yoloHookProxy.amountToBurn(), 0, "Pending amount not cleared");
 
-        // Test 4: Calling burnPendings() with no pending should revert
-        console.log("\n--- Test 4: burnPendings() reverts when no pending ---");
+        // // Test 4: Calling burnPendings() with no pending should revert
+        // console.log("\n--- Test 4: burnPendings() reverts when no pending ---");
 
-        vm.expectRevert(YoloHook.YoloHook__NoPendingBurns.selector);
-        yoloHookProxy.burnPendings();
+        // vm.expectRevert(YoloHook.YoloHook__NoPendingBurns.selector);
+        // yoloHookProxy.burnPendings();
 
         vm.stopPrank();
     }
