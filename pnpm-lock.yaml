@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@uniswap/universal-router':
+        specifier: ^2.0.0
+        version: 2.0.0
+      universal-router:
+        specifier: link:@uniswap/universal-router
+        version: link:@uniswap/universal-router
     devDependencies:
       '@openzeppelin/contracts':
         specifier: ^5.3.0
@@ -23,8 +30,23 @@ importers:
 
 packages:
 
+  '@openzeppelin/contracts@5.0.2':
+    resolution: {integrity: sha512-ytPc6eLGcHHnapAZ9S+5qsdomhjo6QBHTDRRBFfTxXIpsicMhVPouPgmUPebZZZGX7vt9USA+Z+0M0dSVtSUEA==}
+
   '@openzeppelin/contracts@5.3.0':
     resolution: {integrity: sha512-zj/KGoW7zxWUE8qOI++rUM18v+VeLTTzKs/DJFkSzHpQFPD/jKKF0TrMxBfGLl3kpdELCNccvB3zmofSzm4nlA==}
+
+  '@uniswap/universal-router@2.0.0':
+    resolution: {integrity: sha512-6V21kuf547hE1gLfLQ89gv41DMSJY1ZZKer/k7CBagNPJ0oDnUyme+qQPtdoWknyUgSKd1M6sDm/WpocjVmPlA==}
+    engines: {node: '>=14'}
+
+  '@uniswap/v2-core@1.0.1':
+    resolution: {integrity: sha512-MtybtkUPSyysqLY2U210NBDeCHX+ltHt3oADGdjqoThZaFRDKwM6k1Nb3F0A3hk5hwuQvytFWhrWHOEq6nVJ8Q==}
+    engines: {node: '>=10'}
+
+  '@uniswap/v3-core@1.0.0':
+    resolution: {integrity: sha512-kSC4djMGKMHj7sLMYVnn61k9nu+lHjMIxgg9CDQT+s2QYLoA56GbSK9Oxr+qJXzzygbkrmuY6cwgP6cW2JXPFA==}
+    engines: {node: '>=10'}
 
   '@uniswap/v4-core@1.0.2':
     resolution: {integrity: sha512-X15Tm2wWd+USAzEExMbo+g9naA6QN6mPgWm0MzDwRNlOfaNlepfUpSyt9RSrUfEODspwbyWbcLg6t5nwc/e7lg==}
@@ -37,7 +59,19 @@ packages:
 
 snapshots:
 
+  '@openzeppelin/contracts@5.0.2': {}
+
   '@openzeppelin/contracts@5.3.0': {}
+
+  '@uniswap/universal-router@2.0.0':
+    dependencies:
+      '@openzeppelin/contracts': 5.0.2
+      '@uniswap/v2-core': 1.0.1
+      '@uniswap/v3-core': 1.0.0
+
+  '@uniswap/v2-core@1.0.1': {}
+
+  '@uniswap/v3-core@1.0.0': {}
 
   '@uniswap/v4-core@1.0.2': {}
 

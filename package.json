@@ -15,5 +15,9 @@
     "@uniswap/v4-core": "^1.0.1",
     "@uniswap/v4-periphery": "^1.0.1",
     "solmate": "^6.8.0"
+  },
+  "dependencies": {
+    "@uniswap/universal-router": "^2.0.0",
+    "universal-router": "link:@uniswap/universal-router"
   }
 }
