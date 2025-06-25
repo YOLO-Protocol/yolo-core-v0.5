@@ -55,5 +55,72 @@ pnpm install
 forge test
 ```
 
+## What You Can Do
+
+### Development Commands
+
+```bash
+# Build the contracts
+forge build
+
+# Run all tests
+forge test
+
+# Run tests with detailed output
+forge test -vvv
+
+# Run specific test
+forge test --match-test testAddLiquidity
+
+# Check contract sizes
+forge build --sizes
+
+# Format code
+forge fmt
+
+# Generate gas report
+forge test --gas-report
+
+# Run static analysis
+forge analyze
+```
+
+### Deployment
+
+```bash
+# Create .env file with your RPC_URL and PRIVATE_KEY
+cp .env.example .env
+
+# Deploy to testnet
+forge script script/Script01_DeployTestnet.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast
+
+# Verify contracts (after deployment)
+forge verify-contract <CONTRACT_ADDRESS> <CONTRACT_NAME> --rpc-url $RPC_URL
+```
+
+### Testing & Development
+
+- **Run comprehensive test suite**: 22 test cases covering liquidity, swaps, borrowing, liquidations, and flash loans
+- **Test individual components**: Use `--match-test` to run specific functionality tests
+- **Gas optimization**: Analyze gas usage with `--gas-report` flag
+- **Contract size monitoring**: Check size limits with `--sizes` flag
+
+### Key Features to Explore
+
+1. **Liquidity Management**: Add/remove liquidity to USDC/USY anchor pool
+2. **Synthetic Asset Trading**: Swap synthetic assets without prior liquidity
+3. **Collateralized Borrowing**: Deposit collateral and borrow against it
+4. **Flash Loans**: Utilize instant liquidity for arbitrage and liquidations
+5. **Interest Accrual**: Time-based compound interest on borrowed positions
+6. **Liquidation System**: Oracle-triggered liquidations with penalties
+
+### Project Structure
+
+- `src/core/` - Main protocol contracts (YoloHook, YoloOracle)
+- `src/libraries/` - Mathematical libraries (StableMath, FullMath)
+- `src/interfaces/` - Contract interfaces
+- `test/` - Comprehensive test suite
+- `script/` - Deployment and utility scripts
+
 ## Resources
 - [Uniswap V4 Docs](https://docs.uniswap.org/contracts/v4/overview)
