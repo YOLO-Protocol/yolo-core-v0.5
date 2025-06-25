@@ -6,7 +6,10 @@ import "forge-std/Script.sol";
 
 /*---------- IMPORT CONTRACTS ----------*/
 import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTransparentUpgradeableProxy.sol";
-import {YoloHook} from "@yolo/contracts/core/YoloHook.sol";
+import {YoloHookModular} from "@yolo/contracts/core/YoloHookModular.sol";
+import {AnchorLogic} from "@yolo/contracts/core/AnchorLogic.sol";
+import {SyntheticLogic} from "@yolo/contracts/core/SyntheticLogic.sol";
+import {BorrowLogic} from "@yolo/contracts/core/BorrowLogic.sol";
 import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
@@ -16,8 +19,6 @@ import {MockERC20} from "@yolo/contracts/mocks/MockERC20.sol";
 import {MockPriceOracle} from "@yolo/contracts/mocks/MockPriceOracle.sol";
 import {IWETH} from "@yolo/contracts/interfaces/IWETH.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTransparentUpgradeableProxy.sol";
 
 /*---------- IMPORT CONFIGS ----------*/
 import {Config01_OraclesAndAssets} from "@yolo/test/config/Config01_OraclesAndAssets.sol";
@@ -29,21 +30,30 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 /**
- * @title   Script01_DeployTestnet
+ * @title   Script01_DeployTestnetModular
  * @author  0xyolodev.eth
- * @dev     This contract is meant to quicky deploy the entire suite of contracts
+ * @dev     This contract is meant to quickly deploy the entire suite of modular contracts
  *          in a testnet/mainnet environment for interactions.
  */
-contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_AssetAndCollateralInitialization {
+contract Script01_DeployTestnetModular is
+    Script,
+    Config01_OraclesAndAssets,
+    Config02_AssetAndCollateralInitialization
+{
     IWETH public weth;
     mapping(string => address) public symbolToDeployedAsset;
     mapping(string => address) public symbolToDeployedOracle;
     mapping(address => address) public assetToOracle;
     mapping(address => bool) public matchedOracle;
 
-    YoloHook public yoloHookImplementation;
-    YoloHook public yoloHookProxy;
+    YoloHookModular public yoloHookImplementation;
+    YoloHookModular public yoloHookProxy;
     YoloOracle public yoloOracle;
+
+    // Logic contracts
+    AnchorLogic public anchorLogic;
+    SyntheticLogic public syntheticLogic;
+    BorrowLogic public borrowLogic;
 
     mapping(string => address) yoloAssetToAddress;
 
@@ -83,13 +93,11 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             if (keccak256(abi.encodePacked(symbol)) != keccak256(abi.encodePacked("WETH"))) {
                 MockERC20 token = new MockERC20(name, symbol, supply);
                 symbolToDeployedAsset[symbol] = address(token);
-                // _writeAddressToFile(symbol, address(token));
                 _logContractAddress(symbol, address(token));
             } else {
                 MockWETH mockWeth = new MockWETH();
                 symbolToDeployedAsset[symbol] = address(mockWeth);
                 weth = IWETH(address(mockWeth));
-                // _writeAddressToFile(symbol, address(mockWeth));
                 _logContractAddress(symbol, address(mockWeth));
             }
         }
@@ -122,21 +130,34 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             _logContractAddress(oracleConfig.description, address(oracle));
         }
 
-        // D. Deploy YOLO Protocol's Implementation & Proxy
+        // D. Deploy Logic Contracts First
+        console.log("\n=== DEPLOYING LOGIC CONTRACTS ===");
+
+        anchorLogic = new AnchorLogic();
+        _logContractAddress("AnchorLogic", address(anchorLogic));
+
+        syntheticLogic = new SyntheticLogic();
+        _logContractAddress("SyntheticLogic", address(syntheticLogic));
+
+        borrowLogic = new BorrowLogic();
+        _logContractAddress("BorrowLogic", address(borrowLogic));
+
+        // E. Deploy YOLO Protocol's Modular Implementation & Proxy
         uint160 allFlags = uint160(Hooks.ALL_HOOK_MASK);
 
         address CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-        // D-1. Compute Hook Implementation Salt
+        // E-1. Compute Hook Implementation Salt
 
         bytes memory implementationConstructorArgs = abi.encode(address(POOL_MANAGER));
-        (address implementationTargetAddress, bytes32 implementationSalt) =
-            HookMiner.find(CREATE2_DEPLOYER, allFlags, type(YoloHook).creationCode, implementationConstructorArgs);
+        (address implementationTargetAddress, bytes32 implementationSalt) = HookMiner.find(
+            CREATE2_DEPLOYER, allFlags, type(YoloHookModular).creationCode, implementationConstructorArgs
+        );
 
-        yoloHookImplementation = new YoloHook{salt: implementationSalt}(address(POOL_MANAGER));
+        yoloHookImplementation = new YoloHookModular{salt: implementationSalt}(address(POOL_MANAGER));
         require(
             address(yoloHookImplementation) == implementationTargetAddress,
-            "Script01_DeployTestnet: hook implementation address mismatch"
+            "Script01_DeployTestnetModular: hook implementation address mismatch"
         );
 
         console.log("Calculated Implementation Address: ", implementationTargetAddress);
@@ -145,7 +166,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         console.log("Calculated Implementation Address Binary Form: ");
         _logAddressAsBinary(implementationTargetAddress);
 
-        // D-2. Compute Hook Proxy Salt
+        // E-2. Compute Hook Proxy Salt
 
         bytes memory proxyConstructorArgs = abi.encode(implementationTargetAddress, deployer, "");
         (address proxyTargetAddress, bytes32 proxySalt) = HookMiner.find(
@@ -157,23 +178,25 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         console.log("Calculated Proxy Address Binary Form: ");
         _logAddressAsBinary(proxyTargetAddress);
 
-        // D-3. Deploy implementation & proxy to target addresses using CREATE2
-        yoloHookImplementation = new YoloHook{salt: implementationSalt}(address(POOL_MANAGER));
+        // E-3. Deploy implementation & proxy to target addresses using CREATE2
+        yoloHookImplementation = new YoloHookModular{salt: implementationSalt}(address(POOL_MANAGER));
         require(
             address(yoloHookImplementation) == implementationTargetAddress,
-            "Script01_DeployTestnet: hook implementation address mismatch"
+            "Script01_DeployTestnetModular: hook implementation address mismatch"
         );
-        _logContractAddress("YoloHookImplementation: ", address(yoloHookImplementation));
+        _logContractAddress("YoloHookModularImplementation: ", address(yoloHookImplementation));
 
         PublicTransparentUpgradeableProxy yoloHookProxyInProxy;
         yoloHookProxyInProxy =
             new PublicTransparentUpgradeableProxy{salt: proxySalt}(address(yoloHookImplementation), deployer, "");
-        yoloHookProxy = YoloHook(address(yoloHookProxyInProxy));
-        require(address(yoloHookProxy) == proxyTargetAddress, "Script01_DeployTestnet: hook proxy address mismatch");
-        _logContractAddress("YoloHookProxy: ", address(yoloHookProxy));
+        yoloHookProxy = YoloHookModular(address(yoloHookProxyInProxy));
+        require(
+            address(yoloHookProxy) == proxyTargetAddress, "Script01_DeployTestnetModular: hook proxy address mismatch"
+        );
+        _logContractAddress("YoloHookModularProxy: ", address(yoloHookProxy));
 
-        // E. Deploy YoloOracle
-        // E-1. Extract the deployed assets and oracles from the base contract
+        // F. Deploy YoloOracle
+        // F-1. Extract the deployed assets and oracles from the base contract
 
         address[] memory assets = new address[](getMockAssetsLength());
         address[] memory oracles = new address[](getMockAssetsLength());
@@ -183,22 +206,20 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             assets[i] = symbolToDeployedAsset[symbol];
 
             string memory description = string(abi.encodePacked(symbol, " / USD"));
-            // console.log("Description: ", description);
             address oracleAddress = symbolToDeployedOracle[description];
-            // console.log("Oracle Address: ", oracleAddress);
             require(oracleAddress != address(0), string(abi.encodePacked("Oracle not found for ", symbol)));
             oracles[i] = oracleAddress;
 
             console.log(string(abi.encodePacked("Linked Oracle for Asset: ", symbol)), oracleAddress);
         }
 
-        // E-2/ Deploy the YoloOracle contract
+        // F-2. Deploy the YoloOracle contract
         yoloOracle = new YoloOracle(assets, oracles);
         _logContractAddress("YoloOracle: ", address(yoloOracle));
         console.log("YoloHook Implementation Owner Is: ", yoloHookImplementation.owner());
-        console.log("YoloHook Proxy Before Initializa Owner Is: ", yoloHookProxy.owner());
+        console.log("YoloHook Proxy Before Initialize Owner Is: ", yoloHookProxy.owner());
 
-        // F. Initialize the YoloHook proxy contract
+        // G. Initialize the YoloHook proxy contract with logic contracts
         yoloHookProxy.initialize(
             address(weth),
             deployer,
@@ -206,19 +227,22 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             5, // 0.05% stable swap fee
             20, // 0.2% synthetic swap fee
             10, // 0.1% flash loan fee
-            symbolToDeployedAsset["USDC"] // USDC address
+            symbolToDeployedAsset["USDC"], // USDC address
+            address(anchorLogic), // _anchorLogic
+            address(syntheticLogic), // _syntheticLogic
+            address(borrowLogic) // _borrowLogic
         );
         console.log("YoloHook Proxy Owner After Initialize Is: ", yoloHookProxy.owner());
 
         usy = address(yoloHookProxy.anchor());
 
-        // G. Set Hook on YoloOracle
+        // H. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));
         yoloOracle.setAnchor(address(yoloHookProxy.anchor()));
 
-        // H. Create All Yolo Assets
+        // I. Create All Yolo Assets
         for (uint256 i = 0; i < yoloAssetsArray.length; i++) {
-            // H-1. Create New Yolo Assets
+            // I-1. Create New Yolo Assets
             address yoloAsset = yoloHookProxy.createNewYoloAsset(
                 yoloAssetsArray[i].name,
                 yoloAssetsArray[i].symbol,
@@ -230,7 +254,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
 
             console.log(yoloAssetsArray[i].symbol, ":", yoloAsset);
 
-            // H-2. Configure Yolo Assets
+            // I-2. Configure Yolo Assets
             yoloHookProxy.setYoloAssetConfig(
                 yoloAsset,
                 yoloAssetsArray[i].assetConfiguration.maxMintableCap,
@@ -238,7 +262,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             );
         }
 
-        // I. Register and whitelist all collaterals
+        // J. Register and whitelist all collaterals
         for (uint256 i = 0; i < collateralAssetsArray.length; i++) {
             address asset = symbolToDeployedAsset[collateralAssetsArray[i].symbol];
             require(asset != address(0), "Invalid asset address");
@@ -249,7 +273,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
             yoloHookProxy.setCollateralConfig(asset, collateralAssetsArray[i].supplyCap, priceSource);
         }
 
-        // J. Set convenience variables
+        // K. Set convenience variables
         yJpyAsset = yoloAssetToAddress["yJPY"];
         yKrwAsset = yoloAssetToAddress["yKRW"];
         yGoldAsset = yoloAssetToAddress["yXAU"];
@@ -258,7 +282,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         wbtcAsset = symbolToDeployedAsset["WBTC"];
         ptUsdeAsset = symbolToDeployedAsset["PT-sUSDe-31JUL2025"];
 
-        // H. Quick setup pair configs for testings
+        // L. Quick setup pair configs for testings
         address[] memory collateralAssets = new address[](2);
         collateralAssets[0] = wbtcAsset;
         collateralAssets[1] = ptUsdeAsset;
@@ -284,14 +308,14 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
 
         console.log("Successfully Setup Pair Configurations");
 
-        // I. Mint Sufficient USY for further use
-        // Deplosit 100 WBTC and mint 1_000_000 USY
+        // M. Mint Sufficient USY for further use
+        // Deposit 100 WBTC and mint 1_000_000 USY
         IERC20Metadata(wbtcAsset).approve(address(yoloHookProxy), type(uint256).max);
         yoloHookProxy.setYoloAssetConfig(address(yoloHookProxy.anchor()), 10_000_000e18, 10_000_000e18);
         yoloHookProxy.borrow(address(yoloHookProxy.anchor()), 1_500_000e18, wbtcAsset, 100e18);
         console.log("USY Balance of Deployer: ", IERC20Metadata(address(yoloHookProxy.anchor())).balanceOf(deployer));
 
-        // J. Add Liquidity to Anchor Pool
+        // N. Add Liquidity to Anchor Pool
         usy = address(yoloHookProxy.anchor());
         address usdc = symbolToDeployedAsset["USDC"];
 
@@ -300,7 +324,18 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         yoloHookProxy.addLiquidity(1_000_000e18, 1_000_000e18, 0, deployer);
 
         console.log("Successfully Added Liquidity on Anchor Pool!");
+
+        // Final Summary
+        console.log("\n=== MODULAR DEPLOYMENT SUMMARY ===");
+        console.log("AnchorLogic:", address(anchorLogic));
+        console.log("SyntheticLogic:", address(syntheticLogic));
+        console.log("BorrowLogic:", address(borrowLogic));
+        console.log("YoloOracle:", address(yoloOracle));
+        console.log("YoloHookModular Implementation:", address(yoloHookImplementation));
+        console.log("YoloHookModular Proxy:", address(yoloHookProxy));
+        console.log("All modular contracts deployed successfully!");
     }
+
     // ********************************* //
     // *** INTERNAL HELPER FUNCTIONS *** //
     // ********************************* //
