@@ -3,7 +3,7 @@
 pragma solidity ^0.8.26;
 
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {IVersionized} from "@yolo/contracts/interfaces/Iversionized.sol";
+import {IVersionized} from "@yolo/contracts/interfaces/IVersionized.sol";
 
 /**
  * @title   PublicTransparentUpgradeableProxy
