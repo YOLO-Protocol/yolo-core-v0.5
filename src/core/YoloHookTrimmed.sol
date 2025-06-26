@@ -39,7 +39,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *          https://devfolio.co/projects/yolo-protocol-univ-hook-b899
  *
  */
-contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
+contract YoloHookTrimmed is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ***************** //
     // *** LIBRARIES *** //
     // ***************** //
@@ -172,9 +172,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
     mapping(address => UserPositionKey[]) public userPositionKeys;
 
-    /*----- Delegation Logic Contract -----*/
-    address public syntheticAssetLogic;
-
     // ***************//
     // *** EVENTS *** //
     // ************** //
@@ -195,6 +192,42 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint128 hookLPfeeAmount0,
         uint128 hookLPfeeAmount1
     );
+
+    // event AnchorLiquidityAdded(
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     uint256 usdcAmount,
+    //     uint256 usyAmount,
+    //     uint256 liquidityMintedToUser
+    // );
+
+    // event AnchorLiquidityRemoved(
+    //     address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidityBurned
+    // );
+
+    // event AnchorSwapExecuted(
+    //     bytes32 indexed poolId,
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     bool zeroForOne,
+    //     address tokenIn,
+    //     uint256 amountIn,
+    //     address tokenOut,
+    //     uint256 amountOut,
+    //     uint256 feeAmount
+    // );
+
+    // event SyntheticSwapExecuted(
+    //     bytes32 indexed poolId,
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     bool zeroForOne,
+    //     address tokenIn,
+    //     uint256 amountIn,
+    //     address tokenOut,
+    //     uint256 amountOut,
+    //     uint256 feeAmount
+    // );
 
     event UpdateStableSwapFee(uint256 newStableSwapFee, uint256 oldStableSwapFee);
 
@@ -219,6 +252,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     );
 
     event PairDropped(address collateral, address yoloAsset);
+
+    // event PriceSourceUpdated(address indexed asset, address newPriceSource, address oldPriceSource);
 
     event Borrowed(
         address indexed user,
@@ -409,15 +444,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         }
     }
 
-    /**
-     * @notice  Set the synthetic asset logic contract address
-     * @param   _syntheticAssetLogic The address of the synthetic asset logic contract
-     */
-    function setSyntheticAssetLogic(address _syntheticAssetLogic) external onlyOwner {
-        if (_syntheticAssetLogic == address(0)) revert YoloHook__ZeroAddress();
-        syntheticAssetLogic = _syntheticAssetLogic;
-    }
-
     function createNewYoloAsset(string calldata _name, string calldata _symbol, uint8 _decimals, address _priceSource)
         external
         onlyOwner
@@ -556,16 +582,71 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
-        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
-            abi.encodeWithSignature(
-                "borrow(address,uint256,address,uint256)", _yoloAsset, _borrowAmount, _collateral, _collateralAmount
-            )
-        );
-        if (!success) {
-            assembly {
-                revert(add(ret, 0x20), mload(ret))
-            }
+        // Early validation checks with immediate returns
+        if (_borrowAmount == 0 || _collateralAmount == 0) revert YoloHook__InsufficientAmount();
+        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+        if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
+
+        CollateralToYoloAssetConfiguration storage pairConfig = pairConfigs[_collateral][_yoloAsset];
+        if (pairConfig.collateral == address(0)) revert YoloHook__InvalidPair();
+
+        // Early pause checks
+        YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
+        if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
+
+        CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+        if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
+
+        // Transfer collateral first
+        IERC20(_collateral).safeTransferFrom(msg.sender, address(this), _collateralAmount);
+
+        // Handle position updates in a separate branch
+        UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+        if (position.borrower == address(0)) {
+            _initializeNewPosition(position, msg.sender, _collateral, _yoloAsset, pairConfig.interestRate);
+        } else {
+            _updateExistingPosition(position, pairConfig.interestRate);
         }
+
+        // Update amounts
+        position.collateralSuppliedAmount += _collateralAmount;
+        position.yoloAssetMinted += _borrowAmount;
+
+        // Final checks
+        if (!_isSolvent(position, _collateral, _yoloAsset, pairConfig.ltv)) revert YoloHook__NotSolvent();
+        if (IYoloSyntheticAsset(_yoloAsset).totalSupply() + _borrowAmount > assetConfig.maxMintableCap) {
+            revert YoloHook__ExceedsYoloAssetMintCap();
+        }
+        if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
+            revert YoloHook__ExceedsCollateralCap();
+        }
+
+        // Mint and emit
+        IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _borrowAmount);
+        emit Borrowed(msg.sender, _collateral, _collateralAmount, _yoloAsset, _borrowAmount);
+    }
+
+    // Helper functions to reduce complexity
+    function _initializeNewPosition(
+        UserPosition storage position,
+        address borrower,
+        address collateral,
+        address yoloAsset,
+        uint256 interestRate
+    ) private {
+        position.borrower = borrower;
+        position.collateral = collateral;
+        position.yoloAsset = yoloAsset;
+        position.lastUpdatedTimeStamp = block.timestamp;
+        position.storedInterestRate = interestRate;
+
+        UserPositionKey memory key = UserPositionKey({collateral: collateral, yoloAsset: yoloAsset});
+        userPositionKeys[borrower].push(key);
+    }
+
+    function _updateExistingPosition(UserPosition storage position, uint256 newInterestRate) private {
+        _accrueInterest(position, position.storedInterestRate);
+        position.storedInterestRate = newInterestRate;
     }
 
     /**
@@ -579,16 +660,78 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         external
         nonReentrant
     {
-        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
-            abi.encodeWithSignature(
-                "repay(address,address,uint256,bool)", _collateral, _yoloAsset, _repayAmount, _claimCollateral
-            )
-        );
-        if (!success) {
-            assembly {
-                revert(add(ret, 0x20), mload(ret))
-            }
+        UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+        if (position.borrower != msg.sender) revert YoloHook__InvalidPosition();
+
+        _accrueInterest(position, position.storedInterestRate);
+
+        uint256 totalDebt = position.yoloAssetMinted + position.accruedInterest;
+        if (totalDebt == 0) revert YoloHook__NoDebt();
+
+        uint256 actualRepayAmount = _repayAmount == 0 ? totalDebt : _repayAmount;
+        if (actualRepayAmount > totalDebt) revert YoloHook__RepayExceedsDebt();
+
+        // Handle repayment in separate function
+        (uint256 interestPaid, uint256 principalPaid) = _processRepayment(position, _yoloAsset, actualRepayAmount);
+
+        // Check if fully repaid (with dust handling)
+        if (position.yoloAssetMinted <= 1 && position.accruedInterest <= 1) {
+            _handleFullRepayment(position, _collateral, _yoloAsset, actualRepayAmount, _claimCollateral);
+        } else {
+            emit PositionPartiallyRepaid(
+                msg.sender,
+                _collateral,
+                _yoloAsset,
+                actualRepayAmount,
+                interestPaid,
+                principalPaid,
+                position.yoloAssetMinted,
+                position.accruedInterest
+            );
         }
+    }
+
+    function _processRepayment(UserPosition storage position, address yoloAsset, uint256 repayAmount)
+        private
+        returns (uint256 interestPaid, uint256 principalPaid)
+    {
+        // Interest payment first
+        if (position.accruedInterest > 0) {
+            interestPaid = repayAmount < position.accruedInterest ? repayAmount : position.accruedInterest;
+            position.accruedInterest -= interestPaid;
+
+            IYoloSyntheticAsset(yoloAsset).burn(msg.sender, interestPaid);
+            IYoloSyntheticAsset(yoloAsset).mint(treasury, interestPaid);
+        }
+
+        // Principal payment with remaining amount
+        principalPaid = repayAmount - interestPaid;
+        if (principalPaid > 0) {
+            position.yoloAssetMinted -= principalPaid;
+            IYoloSyntheticAsset(yoloAsset).burn(msg.sender, principalPaid);
+        }
+    }
+
+    function _handleFullRepayment(
+        UserPosition storage position,
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        bool claimCollateral
+    ) private {
+        position.yoloAssetMinted = 0;
+        position.accruedInterest = 0;
+
+        uint256 collateralToReturn = 0;
+        if (claimCollateral && position.collateralSuppliedAmount > 0) {
+            collateralToReturn = position.collateralSuppliedAmount;
+            position.collateralSuppliedAmount = 0;
+
+            IERC20(collateral).safeTransfer(msg.sender, collateralToReturn);
+            _removeUserPositionKey(msg.sender, collateral, yoloAsset);
+        }
+
+        emit PositionFullyRepaid(msg.sender, collateral, yoloAsset, repayAmount, collateralToReturn);
     }
 
     /**
@@ -598,16 +741,58 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _amount        How much collateral to withdraw
      */
     function withdraw(address _collateral, address _yoloAsset, uint256 _amount) external nonReentrant whenNotPaused {
-        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
-            abi.encodeWithSignature("withdraw(address,address,uint256)", _collateral, _yoloAsset, _amount)
-        );
-        if (!success) {
-            assembly {
-                revert(add(ret, 0x20), mload(ret))
-            }
+        UserPosition storage pos = positions[msg.sender][_collateral][_yoloAsset];
+        if (pos.borrower != msg.sender) revert YoloHook__InvalidPosition();
+        if (_amount == 0 || _amount > pos.collateralSuppliedAmount) revert YoloHook__InsufficientAmount();
+
+        // Check if collateral is paused (optional, depends on your design intent)
+        CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+        if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
+
+        // Accrue any outstanding interest before checking solvency
+        _accrueInterest(pos, pos.storedInterestRate);
+
+        // Calculate new collateral amount after withdrawal
+        uint256 newCollateralAmount = pos.collateralSuppliedAmount - _amount;
+
+        // If there's remaining debt, ensure the post-withdraw position stays solvent
+        if (pos.yoloAssetMinted + pos.accruedInterest > 0) {
+            // Temporarily reduce collateral for solvency check
+            uint256 origCollateral = pos.collateralSuppliedAmount;
+            pos.collateralSuppliedAmount = newCollateralAmount;
+
+            // Check solvency using existing function
+            CollateralToYoloAssetConfiguration storage pairConfig = pairConfigs[_collateral][_yoloAsset];
+            bool isSolvent = _isSolvent(pos, _collateral, _yoloAsset, pairConfig.ltv);
+
+            // Restore collateral amount
+            pos.collateralSuppliedAmount = origCollateral;
+
+            if (!isSolvent) revert YoloHook__NotSolvent();
         }
+
+        // Update position state
+        pos.collateralSuppliedAmount = newCollateralAmount;
+
+        // Transfer collateral to user
+        IERC20(_collateral).safeTransfer(msg.sender, _amount);
+
+        // Clean up empty positions
+        if (newCollateralAmount == 0 && pos.yoloAssetMinted == 0 && pos.accruedInterest == 0) {
+            _removeUserPositionKey(msg.sender, _collateral, _yoloAsset);
+            delete positions[msg.sender][_collateral][_yoloAsset];
+        }
+
+        emit Withdrawn(msg.sender, _collateral, _yoloAsset, _amount);
     }
 
+    /**
+     * @dev     Liquidate an under‐collateralized position
+     * @param   _user        The borrower whose position is being liquidated
+     * @param   _collateral  The collateral token address
+     * @param   _yoloAsset   The YoloAsset token address
+     * @param   _repayAmount How much of the borrower’s debt to cover (0 == full debt)
+     */
     /**
      * @dev     Liquidate an under‐collateralized position
      * @param   _user        The borrower whose position is being liquidated
@@ -619,15 +804,137 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         external
         nonReentrant
     {
-        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
-            abi.encodeWithSignature(
-                "liquidate(address,address,address,uint256)", _user, _collateral, _yoloAsset, _repayAmount
-            )
-        );
-        if (!success) {
-            assembly {
-                revert(add(ret, 0x20), mload(ret))
-            }
+        // Early validation - all reverts first
+        CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
+        if (cfg.collateral == address(0)) revert YoloHook__InvalidPair();
+
+        UserPosition storage pos = positions[_user][_collateral][_yoloAsset];
+        // if (pos.borrower != _user) revert YoloHook__InvalidPosition();
+        if (pos.borrower == address(0)) revert YoloHook__InvalidPosition();
+
+        // Accrue interest and check solvency
+        _accrueInterest(pos, pos.storedInterestRate);
+        if (_isSolvent(pos, _collateral, _yoloAsset, cfg.ltv)) revert YoloHook__Solvent();
+
+        // Calculate repayment amount
+        uint256 debt = pos.yoloAssetMinted + pos.accruedInterest;
+        uint256 actualRepayAmount = _repayAmount == 0 ? debt : _repayAmount;
+        if (actualRepayAmount > debt) revert YoloHook__RepayExceedsDebt();
+
+        // Execute liquidation after all validation
+        _executeLiquidation(pos, cfg, _collateral, _yoloAsset, actualRepayAmount, _user);
+    }
+
+    /**
+     * @dev     Internal function to execute liquidation after validation
+     * @param   pos              The user position being liquidated
+     * @param   cfg              The pair configuration
+     * @param   collateral       The collateral token address
+     * @param   yoloAsset        The YoloAsset token address
+     * @param   repayAmount      The amount being repaid
+     * @param   user             The user being liquidated
+     */
+    function _executeLiquidation(
+        UserPosition storage pos,
+        CollateralToYoloAssetConfiguration storage cfg,
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        address user
+    ) private {
+        // Pull YoloAsset from liquidator and burn
+        IERC20(yoloAsset).safeTransferFrom(msg.sender, address(this), repayAmount);
+        IYoloSyntheticAsset(yoloAsset).burn(address(this), repayAmount);
+
+        // Process debt reduction
+        (uint256 interestPaid, uint256 principalPaid) = _reduceLiquidatedDebt(pos, repayAmount);
+
+        // Calculate collateral seizure
+        uint256 totalSeize = _calculateCollateralSeizure(collateral, yoloAsset, repayAmount, cfg.liquidationPenalty);
+
+        if (totalSeize > pos.collateralSuppliedAmount) revert YoloHook__InvalidSeizeAmount();
+
+        // Update position
+        pos.collateralSuppliedAmount -= totalSeize;
+
+        // Clean up if fully liquidated
+        _cleanupLiquidatedPosition(pos, user, collateral, yoloAsset);
+
+        // Transfer seized collateral to liquidator
+        IERC20(collateral).safeTransfer(msg.sender, totalSeize);
+
+        emit Liquidated(user, collateral, yoloAsset, repayAmount, totalSeize);
+    }
+
+    /**
+     * @dev     Internal function to reduce debt during liquidation
+     * @param   pos          The position being liquidated
+     * @param   repayAmount  The amount being repaid
+     * @return  interestPaid The amount of interest paid
+     * @return  principalPaid The amount of principal paid
+     */
+    function _reduceLiquidatedDebt(UserPosition storage pos, uint256 repayAmount)
+        private
+        returns (uint256 interestPaid, uint256 principalPaid)
+    {
+        // Pay interest first
+        interestPaid = repayAmount <= pos.accruedInterest ? repayAmount : pos.accruedInterest;
+        pos.accruedInterest -= interestPaid;
+
+        // Then principal
+        principalPaid = repayAmount - interestPaid;
+        pos.yoloAssetMinted -= principalPaid;
+    }
+
+    /**
+     * @dev     Calculate the amount of collateral to seize
+     * @param   collateral          The collateral token address
+     * @param   yoloAsset           The YoloAsset token address
+     * @param   repayAmount         The amount being repaid
+     * @param   liquidationPenalty  The liquidation penalty percentage
+     * @return  totalSeize          The total collateral to seize
+     */
+    function _calculateCollateralSeizure(
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        uint256 liquidationPenalty
+    ) private view returns (uint256 totalSeize) {
+        // Get oracle prices
+        uint256 priceColl = yoloOracle.getAssetPrice(collateral);
+        uint256 priceYol = yoloOracle.getAssetPrice(yoloAsset);
+
+        // Calculate value repaid
+        uint256 usdValueRepaid = repayAmount * priceYol;
+
+        // Calculate raw collateral amount (round up)
+        uint256 rawCollateralSeize = (usdValueRepaid + priceColl - 1) / priceColl;
+
+        // Add liquidation bonus
+        uint256 bonus = (rawCollateralSeize * liquidationPenalty) / PRECISION_DIVISOR;
+        totalSeize = rawCollateralSeize + bonus;
+    }
+
+    /**
+     * @dev     Clean up position if fully liquidated
+     * @param   pos         The position to clean up
+     * @param   user        The user address
+     * @param   collateral  The collateral address
+     * @param   yoloAsset   The yolo asset address
+     */
+    function _cleanupLiquidatedPosition(UserPosition storage pos, address user, address collateral, address yoloAsset)
+        private
+    {
+        // Treat dust amounts as fully liquidated (≤1 wei)
+        if (pos.yoloAssetMinted <= 1 && pos.accruedInterest <= 1) {
+            pos.yoloAssetMinted = 0;
+            pos.accruedInterest = 0;
+        }
+
+        // If position is fully cleared, delete it
+        if (pos.yoloAssetMinted == 0 && pos.accruedInterest == 0 && pos.collateralSuppliedAmount == 0) {
+            delete positions[user][collateral][yoloAsset];
+            _removeUserPositionKey(user, collateral, yoloAsset);
         }
     }
 
@@ -1254,3 +1561,404 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         amountToBurn = 0;
     }
 }
+
+// // Backup
+//     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+//         internal
+//         override
+//         returns (bytes4, BeforeSwapDelta, uint24)
+//     {
+//         // A. Burn previous pending burn tokens
+//         if (assetToBurn != address(0)) {
+//             _burnPending();
+//         }
+
+//         // B. Determine the pool and the swap context
+//         bytes32 poolId = PoolId.unwrap(key.toId());
+
+//         // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
+//         BeforeSwapDelta beforeSwapDelta;
+//         int128 dSpecified;
+//         int128 dUnspecified;
+
+//         // Determine whether exact input or exact output
+//         bool isExactInput = params.amountSpecified < 0 ? true : false;
+
+//         // Tokens Instance
+//         Currency currencyIn;
+//         Currency currencyOut;
+
+//         // Quote Storage
+//         uint256 grossInputAmount;
+//         uint256 netInputAmount;
+//         uint256 fee;
+//         uint256 amountOut;
+
+//         // C. Branch out path for anchor pool and other synthetic pools
+
+//         if (isAnchorPool[poolId]) {
+//             // C-1. Execute stable swap if it's anchor pool
+
+//             // 1. Parse Input
+//             if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
+//                 revert YoloHook__InsufficientReserves();
+//             }
+//             bool usdcToUsy = (params.zeroForOne == (anchorPoolToken0 == usdc));
+//             currencyIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
+//             currencyOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
+
+//             uint256 reserveInRaw = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
+//             uint256 reserveOutRaw = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
+
+//             uint256 scaleUpIn = usdcToUsy ? USDC_SCALE_UP : 1;
+//             uint256 scaleUpOut = usdcToUsy ? 1 : USDC_SCALE_UP;
+
+//             uint256 reserveInWad = reserveInRaw * scaleUpIn;
+//             uint256 reserveOutWad = reserveOutRaw * scaleUpOut;
+
+//             // 2. Quote
+//             if (isExactInput) {
+//                 grossInputAmount = uint256(-params.amountSpecified);
+//                 uint256 grossInputWad = grossInputAmount * scaleUpIn; // Scale Up
+
+//                 uint256 feeWad = (grossInputWad * stableSwapFee) / PRECISION_DIVISOR;
+//                 uint256 netInputWad = grossInputWad - feeWad;
+
+//                 uint256 amountOutWad = StableMathLib.calculateStableSwapOutput(netInputWad, reserveInWad, reserveOutWad);
+
+//                 if (amountOutWad == 0) revert YoloHook__InvalidOutput();
+
+//                 amountOut = amountOutWad / scaleUpOut; // Scale Down
+//                 fee = feeWad / scaleUpIn; // Scale Down
+//                 netInputAmount = grossInputAmount - fee; // raw amount
+//             } else {
+//                 amountOut = uint256(params.amountSpecified);
+//                 uint256 amountOutWad = amountOut * scaleUpOut;
+//                 uint256 netInputWad = StableMathLib.calculateStableSwapInput(amountOutWad, reserveInWad, reserveOutWad);
+
+//                 uint256 grossInputWad =
+//                     (netInputWad * PRECISION_DIVISOR + (PRECISION_DIVISOR - 1)) / (PRECISION_DIVISOR - stableSwapFee); // ceil-div
+//                 uint256 feeWad = grossInputWad - netInputWad;
+
+//                 grossInputAmount = grossInputWad / scaleUpIn;
+//                 fee = feeWad / scaleUpIn;
+//                 netInputAmount = grossInputAmount - fee;
+//             }
+
+//             if (usdcToUsy) {
+//                 totalAnchorReserveUSDC = reserveInRaw + netInputAmount;
+//                 totalAnchorReserveUSY = reserveOutRaw - amountOut;
+//             } else {
+//                 totalAnchorReserveUSY = reserveInRaw + netInputAmount;
+//                 totalAnchorReserveUSDC = reserveOutRaw - amountOut;
+//             }
+
+//             currencyOut.settle(poolManager, address(this), amountOut, true);
+//         } else if (isSyntheticPool[poolId]) {
+//             // C-2. Execute oracle swap if it's synthetic pool
+
+//             // 1. Parse Input
+//             (currencyIn, currencyOut) =
+//                 params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
+//             address tokenIn = Currency.unwrap(currencyIn);
+//             address tokenOut = Currency.unwrap(currencyOut);
+
+//             // 2. Quote
+//             if (isExactInput) {
+//                 // 2A. Exact-input branch: Calculate Output
+//                 grossInputAmount = uint256(-int256(params.amountSpecified));
+//                 fee = grossInputAmount * syntheticSwapFee / PRECISION_DIVISOR;
+//                 netInputAmount = grossInputAmount - fee;
+//                 amountOut = yoloOracle.getAssetPrice(tokenIn) * netInputAmount / yoloOracle.getAssetPrice(tokenOut);
+//             } else {
+//                 // 2B. Exact-output branch: Calculate Input
+//                 amountOut = uint256(int256(params.amountSpecified));
+//                 netInputAmount = yoloOracle.getAssetPrice(tokenOut) * amountOut / yoloOracle.getAssetPrice(tokenIn); // =1.4084507\times10^{24}
+//                 uint256 numerator = netInputAmount * syntheticSwapFee;
+//                 uint256 denominator = PRECISION_DIVISOR - syntheticSwapFee;
+
+//                 fee = (numerator + denominator - 1) / denominator;
+//                 grossInputAmount = netInputAmount + fee;
+//             }
+
+//             // Mint assets that needs to be sent to user, and settle with PoolManager
+//             IYoloSyntheticAsset(tokenOut).mint(address(this), amountOut);
+//             currencyOut.settle(poolManager, address(this), amountOut, false);
+
+//             // We cant pull and burn the asset in beforeSwap, that's why we need to burn it in afterSwap
+//             assetToBurn = tokenIn;
+//             amountToBurn = netInputAmount;
+//         }
+
+//         // D. Settle Currency
+
+//         // Pull the amount from the user into PoolManager
+//         currencyIn.take(poolManager, address(this), netInputAmount, true);
+
+//         // Pull fee to treasury if fee is non-zero
+//         if (fee > 0) currencyIn.take(poolManager, treasury, fee, isSyntheticPool[poolId]); // Take in ERC-20 if anchor pool, other wise take in claim tokens
+
+//         // E. Construct BeforeSwapDelta
+
+//         if (params.amountSpecified < 0) {
+//             // Exact Input
+//             dSpecified = int128(uint128(grossInputAmount)); // positive
+//             dUnspecified = -int128(uint128(amountOut)); // negative
+//         } else {
+//             // Exact Output
+//             dSpecified = -int128(uint128(amountOut)); // negative
+//             dUnspecified = int128(uint128(grossInputAmount)); // positive
+//         }
+//         beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
+
+//         // F. Emit HookSwap event based on Uniswap V4 format
+
+//         emit HookSwap(
+//             poolId,
+//             sender,
+//             /* amount0 */
+//             params.zeroForOne
+//                 ? int128(uint128(grossInputAmount)) // user pays token0
+//                 : -int128(uint128(amountOut)), // user receives token0
+//             /* amount1 */
+//             params.zeroForOne
+//                 ? -int128(uint128(amountOut)) // user receives token1
+//                 : int128(uint128(grossInputAmount)), // user pays token1
+//             /* fee0   */
+//             params.zeroForOne ? uint128(fee) : 0,
+//             /* fee1   */
+//             params.zeroForOne ? 0 : uint128(fee)
+//         );
+
+//         return (this.beforeSwap.selector, beforeSwapDelta, 0);
+//     }
+
+// function borrow(address _yoloAsset, uint256 _borrowAmount, address _collateral, uint256 _collateralAmount)
+//     external
+//     nonReentrant
+//     whenNotPaused
+// {
+//     // Validate parameters
+//     if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+//     if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
+//     if (_borrowAmount == 0 || _collateralAmount == 0) revert YoloHook__InsufficientAmount();
+
+//     // Check if this pair is configured
+//     CollateralToYoloAssetConfiguration storage pairConfig = pairConfigs[_collateral][_yoloAsset];
+//     if (pairConfig.collateral == address(0)) revert YoloHook__InvalidPair();
+
+//     // Transfer collateral from user to this contract
+//     IERC20(_collateral).safeTransferFrom(msg.sender, address(this), _collateralAmount);
+
+//     // Get the user position
+//     UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+
+//     // Handle new vs existing position
+//     if (position.borrower == address(0)) {
+//         // Initialize new position
+//         position.borrower = msg.sender;
+//         position.collateral = _collateral;
+//         position.yoloAsset = _yoloAsset;
+//         position.lastUpdatedTimeStamp = block.timestamp;
+//         position.storedInterestRate = pairConfig.interestRate;
+
+//         // Add to user's positions array - using key pair approach
+//         UserPositionKey memory key = UserPositionKey({collateral: _collateral, yoloAsset: _yoloAsset});
+//         userPositionKeys[msg.sender].push(key);
+//     } else {
+//         // Accrue interest on existing position at the current stored rate
+//         _accrueInterest(position, position.storedInterestRate);
+//         // Update to new interest rate
+//         position.storedInterestRate = pairConfig.interestRate;
+//     }
+
+//     // Update position
+//     position.collateralSuppliedAmount += _collateralAmount;
+//     position.yoloAssetMinted += _borrowAmount;
+
+//     CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+//     YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
+
+//     // Check if position would be solvent after minting
+//     if (!_isSolvent(position, _collateral, _yoloAsset, pairConfig.ltv)) revert YoloHook__NotSolvent();
+
+//     // Check if yolo asset is paused
+//     if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
+
+//     // Check if minting would exceed the asset's cap
+//     if (IYoloSyntheticAsset(_yoloAsset).totalSupply() + _borrowAmount > assetConfig.maxMintableCap) {
+//         revert YoloHook__ExceedsYoloAssetMintCap();
+//     }
+//     if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
+
+//     // Then check the actual cap
+//     if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
+//         revert YoloHook__ExceedsCollateralCap();
+//     }
+
+//     // Mint yolo asset to user
+//     IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _borrowAmount);
+
+//     // Emit event
+//     emit Borrowed(msg.sender, _collateral, _collateralAmount, _yoloAsset, _borrowAmount);
+// }
+
+// function repay(address _collateral, address _yoloAsset, uint256 _repayAmount, bool _claimCollateral)
+//     external
+//     nonReentrant
+// {
+//     // Get user position
+//     UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+//     if (position.borrower != msg.sender) revert YoloHook__InvalidPosition();
+
+//     // Accrue interest at the stored rate (don't update rate)
+//     _accrueInterest(position, position.storedInterestRate);
+
+//     // Calculate total debt (principal + interest)
+//     uint256 totalDebt = position.yoloAssetMinted + position.accruedInterest;
+//     if (totalDebt == 0) revert YoloHook__NoDebt();
+
+//     // If repayAmount is 0, repay full debt
+//     uint256 repayAmount = _repayAmount == 0 ? totalDebt : _repayAmount;
+//     if (repayAmount > totalDebt) revert YoloHook__RepayExceedsDebt();
+
+//     // First pay off interest, then principal
+//     uint256 interestPayment = 0;
+//     uint256 principalPayment = 0;
+
+//     if (position.accruedInterest > 0) {
+//         // Determine how much interest to pay
+//         interestPayment = repayAmount < position.accruedInterest ? repayAmount : position.accruedInterest;
+
+//         // Update position's accrued interest
+//         position.accruedInterest -= interestPayment;
+
+//         // Burn interest payment from user
+//         IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, interestPayment);
+
+//         // Mint interest to treasury
+//         IYoloSyntheticAsset(_yoloAsset).mint(treasury, interestPayment);
+//     }
+
+//     // Calculate principal payment (if any remains after interest payment)
+//     principalPayment = repayAmount - interestPayment;
+
+//     if (principalPayment > 0) {
+//         // Update position's minted amount
+//         position.yoloAssetMinted -= principalPayment;
+
+//         // Burn principal payment from user
+//         IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, principalPayment);
+//     }
+
+//     // Treat dust amounts as fully repaid (≤1 wei)
+//     if (position.yoloAssetMinted <= 1 && position.accruedInterest <= 1) {
+//         position.yoloAssetMinted = 0;
+//         position.accruedInterest = 0;
+//     }
+
+//     // Check if the position is fully repaid
+//     if (position.yoloAssetMinted == 0 && position.accruedInterest == 0) {
+//         uint256 collateralToReturn;
+//         if (_claimCollateral) {
+//             // Auto-return collateral if requested
+//             collateralToReturn = position.collateralSuppliedAmount;
+//             position.collateralSuppliedAmount = 0;
+
+//             // Check if this would exceed collateral cap after withdrawal
+//             CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+//             if (colConfig.maxSupplyCap > 0) {
+//                 // Additional check not strictly necessary for withdrawal, but good for consistency
+//                 if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
+//                     revert YoloHook__ExceedsCollateralCap();
+//                 }
+//             }
+
+//             // Return collateral to user
+//             IERC20(_collateral).safeTransfer(msg.sender, collateralToReturn);
+
+//             // Remove position from user's positions list
+//             _removeUserPositionKey(msg.sender, _collateral, _yoloAsset);
+//         }
+
+//         emit PositionFullyRepaid(msg.sender, _collateral, _yoloAsset, repayAmount, collateralToReturn);
+//     } else {
+//         emit PositionPartiallyRepaid(
+//             msg.sender,
+//             _collateral,
+//             _yoloAsset,
+//             repayAmount,
+//             interestPayment,
+//             principalPayment,
+//             position.yoloAssetMinted,
+//             position.accruedInterest
+//         );
+//     }
+// }
+
+// function liquidate(address _user, address _collateral, address _yoloAsset, uint256 _repayAmount)
+//     external
+//     nonReentrant
+// {
+//     // 1) load config & position
+//     CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
+//     if (cfg.collateral == address(0)) revert YoloHook__InvalidPair();
+
+//     UserPosition storage pos = positions[_user][_collateral][_yoloAsset];
+//     if (pos.borrower != _user) revert YoloHook__InvalidPosition();
+
+//     // 2) accrue interest so interest+principal is up to date
+//     _accrueInterest(pos, pos.storedInterestRate);
+
+//     // 3) verify it’s under-collateralized
+//     if (_isSolvent(pos, _collateral, _yoloAsset, cfg.ltv)) revert YoloHook__Solvent();
+
+//     // 4) determine how much debt we’ll cover
+//     uint256 debt = pos.yoloAssetMinted + pos.accruedInterest;
+//     uint256 repayAmt = _repayAmount == 0 ? debt : _repayAmount;
+//     if (repayAmt > debt) revert YoloHook__RepayExceedsDebt();
+
+//     // 5) pull in YoloAsset from liquidator & burn
+//     IERC20(_yoloAsset).safeTransferFrom(msg.sender, address(this), repayAmt);
+//     IYoloSyntheticAsset(_yoloAsset).burn(address(this), repayAmt);
+
+//     // 6) split into interest vs principal
+//     uint256 interestPaid = repayAmt <= pos.accruedInterest ? repayAmt : pos.accruedInterest;
+//     pos.accruedInterest -= interestPaid;
+//     uint256 principalPaid = repayAmt - interestPaid;
+//     pos.yoloAssetMinted -= principalPaid;
+
+//     // 7) figure out how much collateral to seize based on oracle prices
+//     uint256 priceColl = yoloOracle.getAssetPrice(_collateral);
+//     uint256 priceYol = yoloOracle.getAssetPrice(_yoloAsset);
+//     // value in “oracle units” = repayAmt * priceYol
+//     uint256 usdValueRepaid = repayAmt * priceYol;
+//     // raw collateral units = value / priceColl
+//     uint256 rawCollateralSeize = (usdValueRepaid + priceColl - 1) / priceColl; // Round up
+//     // bonus for liquidator (penalty)
+//     uint256 bonus = (rawCollateralSeize * cfg.liquidationPenalty) / PRECISION_DIVISOR;
+//     uint256 totalSeize = rawCollateralSeize + bonus;
+//     if (totalSeize > pos.collateralSuppliedAmount) revert YoloHook__InvalidSeizeAmount();
+
+//     // 8) update the stored collateral
+//     //    — we only deduct the raw portion; the bonus comes out of protocol’s buffer
+//     pos.collateralSuppliedAmount -= totalSeize;
+
+//     // 9) clean up if fully closed
+
+//     // Treat dust amounts as fully liquidated (≤1 wei)
+//     if (pos.yoloAssetMinted <= 1 && pos.accruedInterest <= 1) {
+//         pos.yoloAssetMinted = 0;
+//         pos.accruedInterest = 0;
+//     }
+
+//     if (pos.yoloAssetMinted == 0 && pos.accruedInterest == 0 && pos.collateralSuppliedAmount == 0) {
+//         delete positions[_user][_collateral][_yoloAsset];
+//         _removeUserPositionKey(_user, _collateral, _yoloAsset);
+//     }
+
+//     // 10) transfer seized collateral to liquidator
+//     IERC20(_collateral).safeTransfer(msg.sender, totalSeize);
+
+//     emit Liquidated(_user, _collateral, _yoloAsset, repayAmt, totalSeize);
+// }

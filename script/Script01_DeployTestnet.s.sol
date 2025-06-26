@@ -128,6 +128,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         address CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
         // D-1. Compute Hook Implementation Salt
+
         bytes memory implementationConstructorArgs = abi.encode(address(POOL_MANAGER));
         (address implementationTargetAddress, bytes32 implementationSalt) =
             HookMiner.find(CREATE2_DEPLOYER, allFlags, type(YoloHook).creationCode, implementationConstructorArgs);
