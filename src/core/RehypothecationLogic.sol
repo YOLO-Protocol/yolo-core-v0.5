@@ -16,7 +16,7 @@ contract RehypothecationLogic is YoloStorage {
      * @param   _usdcAmount  Amount of USDC to spend
      * @return  usycOut      Amount of USYC received
      */
-    function buyUSYC(uint256 _usdcAmount) external returns (uint256 usycOut) {
+    function buyUSYC(uint256 _usdcAmount) public returns (uint256 usycOut) {
         usycOut = usycTeller.buy(_usdcAmount);
 
         // Update cost basis with weighted average
@@ -33,7 +33,7 @@ contract RehypothecationLogic is YoloStorage {
      * @param   _usycAmount  Amount of USYC to sell
      * @return  usdcOut      Amount of USDC received
      */
-    function sellUSYC(uint256 _usycAmount) external returns (uint256 usdcOut) {
+    function sellUSYC(uint256 _usycAmount) public returns (uint256 usdcOut) {
         require(_usycAmount <= usycQuantity, "Insufficient USYC");
 
         // Calculate proportional cost basis being closed
