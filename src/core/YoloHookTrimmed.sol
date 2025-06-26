@@ -11,6 +11,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
 import {FullMath} from "@yolo/contracts/libraries/FullMath.sol";
+import {StableMathLib} from "@yolo/contracts/libraries/StableMathLib.sol";
 /*---------- IMPORT INTERFACES ----------*/
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -38,7 +39,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *          https://devfolio.co/projects/yolo-protocol-univ-hook-b899
  *
  */
-contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
+contract YoloHookTrimmed is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ***************** //
     // *** LIBRARIES *** //
     // ***************** //
@@ -73,15 +74,6 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 usdcAmount;
         uint256 usyAmount;
         uint256 liquidity; // LP tokens burnt
-    }
-
-    struct SwapCallbackData {
-        address sender;
-        address tokenIn;
-        uint256 amountInFromUser;
-        address tokenOut;
-        uint256 amountOutToUser;
-        bool zeroForOne;
     }
 
     struct YoloAssetConfiguration {
@@ -123,15 +115,15 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // *** CONSTANT & IMMUTABLES *** //
     // ***************************** //
     uint256 public constant PRECISION_DIVISOR = 10000; // 100%
+    uint256 private constant YEAR = 365 days;
 
     // ***************************//
     // *** CONTRACT VARIABLES *** //
     // ************************** //
 
     address public treasury; // Address of the treasury to collect fees
-    IWETH public weth;
+    // IWETH public weth;
     IYoloOracle public yoloOracle;
-    address public swapRouter;
 
     /*----- Fees Configuration -----*/
     uint256 public stableSwapFee; // Swap fee for the anchor pool, in basis points (e.g., 100 = 1%)
@@ -143,7 +135,6 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     address public usdc; // USDC address, used in the anchor pool to pair with USY
     bytes32 public anchorPoolId; // Anchor pool ID, used to identify the pool in the PoolManager
     address public anchorPoolToken0; // Token0 address of the anchor pool, set in initialize
-    address public anchorPoolToken1; // Token1 address of the anchor pool, set in initialize
 
     mapping(bytes32 => bool) public isAnchorPool;
     uint256 public anchorPoolLiquiditySupply; // Total LP tokens for anchor pool
@@ -163,10 +154,8 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     uint256 public totalAnchorReserveUSDC;
     uint256 public totalAnchorReserveUSY;
 
-    // Constants for stableswap math
+    // Constants for stableswap
     uint256 private constant MINIMUM_LIQUIDITY = 1000;
-    uint256 private constant MATH_PRECISION = 1e18;
-    uint8 private constant STABLESWAP_ITERATIONS = 255; // Maximum iterations for stable swap Newton-Raphson method
 
     /*----- Asset & Collateral Configurations -----*/
     mapping(address => bool) public isYoloAsset; // Mapping to check if an address is a Yolo asset
@@ -180,7 +169,6 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     mapping(address => mapping(address => CollateralToYoloAssetConfiguration)) public pairConfigs; // Pair Configs of (collateral => asset)
 
     /*----- User Positions -----*/
-    mapping(address => UserPosition[]) userAllPositions;
     mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
     mapping(address => UserPositionKey[]) public userPositionKeys;
 
@@ -205,47 +193,47 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint128 hookLPfeeAmount1
     );
 
-    event AnchorLiquidityAdded(
-        address indexed sender,
-        address indexed receiver,
-        uint256 usdcAmount,
-        uint256 usyAmount,
-        uint256 liquidityMintedToUser
-    );
+    // event AnchorLiquidityAdded(
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     uint256 usdcAmount,
+    //     uint256 usyAmount,
+    //     uint256 liquidityMintedToUser
+    // );
 
-    event AnchorLiquidityRemoved(
-        address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidityBurned
-    );
+    // event AnchorLiquidityRemoved(
+    //     address indexed sender, address indexed receiver, uint256 usdcAmount, uint256 usyAmount, uint256 liquidityBurned
+    // );
 
-    event AnchorSwapExecuted(
-        bytes32 indexed poolId,
-        address indexed sender,
-        address indexed receiver,
-        bool zeroForOne,
-        address tokenIn,
-        uint256 amountIn,
-        address tokenOut,
-        uint256 amountOut,
-        uint256 feeAmount
-    );
+    // event AnchorSwapExecuted(
+    //     bytes32 indexed poolId,
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     bool zeroForOne,
+    //     address tokenIn,
+    //     uint256 amountIn,
+    //     address tokenOut,
+    //     uint256 amountOut,
+    //     uint256 feeAmount
+    // );
 
-    event SyntheticSwapExecuted(
-        bytes32 indexed poolId,
-        address indexed sender,
-        address indexed receiver,
-        bool zeroForOne,
-        address tokenIn,
-        uint256 amountIn,
-        address tokenOut,
-        uint256 amountOut,
-        uint256 feeAmount
-    );
+    // event SyntheticSwapExecuted(
+    //     bytes32 indexed poolId,
+    //     address indexed sender,
+    //     address indexed receiver,
+    //     bool zeroForOne,
+    //     address tokenIn,
+    //     uint256 amountIn,
+    //     address tokenOut,
+    //     uint256 amountOut,
+    //     uint256 feeAmount
+    // );
 
-    event UpdateFlashLoanFee(uint256 newFlashLoanFee, uint256 oldFlashLoanFee);
+    event UpdateStableSwapFee(uint256 newStableSwapFee, uint256 oldStableSwapFee);
 
     event UpdateSyntheticSwapFee(uint256 newSyntheticSwapFee, uint256 oldSynthethicSwapFee);
 
-    event UpdateStableSwapFee(uint256 newStableSwapFee, uint256 oldStableSwapFee);
+    event UpdateFlashLoanFee(uint256 newFlashLoanFee, uint256 oldFlashLoanFee);
 
     event YoloAssetCreated(address indexed asset, string name, string symbol, uint8 decimals, address priceSource);
 
@@ -265,7 +253,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     event PairDropped(address collateral, address yoloAsset);
 
-    event PriceSourceUpdated(address indexed asset, address newPriceSource, address oldPriceSource);
+    // event PriceSourceUpdated(address indexed asset, address newPriceSource, address oldPriceSource);
 
     event Borrowed(
         address indexed user,
@@ -304,11 +292,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 collateralSeized
     );
 
-    event FlashLoanExecuted(address flashBorrower, address yoloAsset, uint256 amount, uint256 fee);
-
-    event BatchFlashLoanExecuted(
-        address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees
-    );
+    event FlashLoanExecuted(address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees);
 
     // ***************//
     // *** ERRORS *** //
@@ -321,11 +305,9 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__InsufficientLiquidityMinted();
     error YoloHook__InsufficientLiquidityBalance();
     error YoloHook__InsufficientAmount();
-    error YoloHook__KInvariantViolation();
     error YoloHook__UnknownUnlockActionError();
     error YoloHook__InvalidPoolId();
     error YoloHook__InsufficientReserves();
-    error YoloHook__MathOverflow();
     error YoloHook__StableswapConvergenceError();
     error YoloHook__InvalidOutput();
     error YoloHook__InvalidSwapAmounts();
@@ -345,8 +327,6 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__InvalidSeizeAmount();
     error YoloHook__ExceedsFlashLoanCap();
     error YoloHook__NoPendingBurns();
-    error CustomRevert__uint256(uint256 num);
-    error CustomRevert__int256(int256 num);
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -390,7 +370,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         _transferOwnership(msg.sender);
 
         // Initialize the BaseHook with paramaters
-        weth = IWETH(_wethAddress);
+        // weth = IWETH(_wethAddress);
         treasury = _treasury;
         yoloOracle = IYoloOracle(_yoloOracle);
         stableSwapFee = _stableSwapFee;
@@ -425,12 +405,10 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
             c0 = Currency.wrap(tokenA);
             c1 = Currency.wrap(tokenB);
             anchorPoolToken0 = tokenA;
-            anchorPoolToken1 = tokenB;
         } else {
             c0 = Currency.wrap(tokenB);
             c1 = Currency.wrap(tokenA);
             anchorPoolToken0 = tokenB;
-            anchorPoolToken1 = tokenA;
         }
 
         // Initialize the anchor pool with the sorted tokens and fee
@@ -451,22 +429,19 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         else _unpause();
     }
 
-    function setFlashLoanFee(uint256 _newFlashLoanFee) external onlyOwner {
-        uint256 oldFlashLoanFee = flashLoanFee;
-        flashLoanFee = _newFlashLoanFee;
-        emit UpdateFlashLoanFee(_newFlashLoanFee, oldFlashLoanFee);
-    }
-
-    function setSyntheticSwapFee(uint256 _newSyntheticSwapFee) external onlyOwner {
-        uint256 oldSyntheticSwapFee = syntheticSwapFee;
-        syntheticSwapFee = _newSyntheticSwapFee;
-        emit UpdateSyntheticSwapFee(_newSyntheticSwapFee, oldSyntheticSwapFee);
-    }
-
-    function setStableSwapFee(uint256 _newStableSwapFee) external onlyOwner {
-        uint256 oldStableSwapfee = stableSwapFee;
-        stableSwapFee = _newStableSwapFee;
-        emit UpdateStableSwapFee(_newStableSwapFee, oldStableSwapfee);
+    function setFee(uint256 _newFee, uint8 _feeType) external onlyOwner {
+        if (_feeType == 0) {
+            emit UpdateStableSwapFee(_newFee, stableSwapFee);
+            stableSwapFee = _newFee;
+        }
+        if (_feeType == 1) {
+            emit UpdateSyntheticSwapFee(_newFee, syntheticSwapFee);
+            syntheticSwapFee = _newFee;
+        }
+        if (_feeType == 2) {
+            emit UpdateFlashLoanFee(_newFee, flashLoanFee);
+            flashLoanFee = _newFee;
+        }
     }
 
     function createNewYoloAsset(string calldata _name, string calldata _symbol, uint8 _decimals, address _priceSource)
@@ -588,7 +563,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
         yoloOracle.setAssetSources(assets, priceSources);
 
-        emit PriceSourceUpdated(_asset, _priceSource, oldPriceSource);
+        // emit PriceSourceUpdated(_asset, _priceSource, oldPriceSource);
     }
 
     // ***************************** //
@@ -607,69 +582,71 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
-        // Validate parameters
+        // Early validation checks with immediate returns
+        if (_borrowAmount == 0 || _collateralAmount == 0) revert YoloHook__InsufficientAmount();
         if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
         if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
-        if (_borrowAmount == 0 || _collateralAmount == 0) revert YoloHook__InsufficientAmount();
 
-        // Check if this pair is configured
         CollateralToYoloAssetConfiguration storage pairConfig = pairConfigs[_collateral][_yoloAsset];
         if (pairConfig.collateral == address(0)) revert YoloHook__InvalidPair();
 
-        // Transfer collateral from user to this contract
+        // Early pause checks
+        YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
+        if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
+
+        CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+        if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
+
+        // Transfer collateral first
         IERC20(_collateral).safeTransferFrom(msg.sender, address(this), _collateralAmount);
 
-        // Get the user position
+        // Handle position updates in a separate branch
         UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
-
-        // Handle new vs existing position
         if (position.borrower == address(0)) {
-            // Initialize new position
-            position.borrower = msg.sender;
-            position.collateral = _collateral;
-            position.yoloAsset = _yoloAsset;
-            position.lastUpdatedTimeStamp = block.timestamp;
-            position.storedInterestRate = pairConfig.interestRate;
-
-            // Add to user's positions array - using key pair approach
-            UserPositionKey memory key = UserPositionKey({collateral: _collateral, yoloAsset: _yoloAsset});
-            userPositionKeys[msg.sender].push(key);
+            _initializeNewPosition(position, msg.sender, _collateral, _yoloAsset, pairConfig.interestRate);
         } else {
-            // Accrue interest on existing position at the current stored rate
-            _accrueInterest(position, position.storedInterestRate);
-            // Update to new interest rate
-            position.storedInterestRate = pairConfig.interestRate;
+            _updateExistingPosition(position, pairConfig.interestRate);
         }
 
-        // Update position
+        // Update amounts
         position.collateralSuppliedAmount += _collateralAmount;
         position.yoloAssetMinted += _borrowAmount;
 
-        CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
-        YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
-
-        // Check if position would be solvent after minting
+        // Final checks
         if (!_isSolvent(position, _collateral, _yoloAsset, pairConfig.ltv)) revert YoloHook__NotSolvent();
-
-        // Check if yolo asset is paused
-        if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
-
-        // Check if minting would exceed the asset's cap
         if (IYoloSyntheticAsset(_yoloAsset).totalSupply() + _borrowAmount > assetConfig.maxMintableCap) {
             revert YoloHook__ExceedsYoloAssetMintCap();
         }
-        if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
-
-        // Then check the actual cap
         if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
             revert YoloHook__ExceedsCollateralCap();
         }
 
-        // Mint yolo asset to user
+        // Mint and emit
         IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _borrowAmount);
-
-        // Emit event
         emit Borrowed(msg.sender, _collateral, _collateralAmount, _yoloAsset, _borrowAmount);
+    }
+
+    // Helper functions to reduce complexity
+    function _initializeNewPosition(
+        UserPosition storage position,
+        address borrower,
+        address collateral,
+        address yoloAsset,
+        uint256 interestRate
+    ) private {
+        position.borrower = borrower;
+        position.collateral = collateral;
+        position.yoloAsset = yoloAsset;
+        position.lastUpdatedTimeStamp = block.timestamp;
+        position.storedInterestRate = interestRate;
+
+        UserPositionKey memory key = UserPositionKey({collateral: collateral, yoloAsset: yoloAsset});
+        userPositionKeys[borrower].push(key);
+    }
+
+    function _updateExistingPosition(UserPosition storage position, uint256 newInterestRate) private {
+        _accrueInterest(position, position.storedInterestRate);
+        position.storedInterestRate = newInterestRate;
     }
 
     /**
@@ -682,95 +659,79 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     function repay(address _collateral, address _yoloAsset, uint256 _repayAmount, bool _claimCollateral)
         external
         nonReentrant
-        whenNotPaused
     {
-        // Get user position
         UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
         if (position.borrower != msg.sender) revert YoloHook__InvalidPosition();
 
-        // Accrue interest at the stored rate (don't update rate)
         _accrueInterest(position, position.storedInterestRate);
 
-        // Calculate total debt (principal + interest)
         uint256 totalDebt = position.yoloAssetMinted + position.accruedInterest;
         if (totalDebt == 0) revert YoloHook__NoDebt();
 
-        // If repayAmount is 0, repay full debt
-        uint256 repayAmount = _repayAmount == 0 ? totalDebt : _repayAmount;
-        if (repayAmount > totalDebt) revert YoloHook__RepayExceedsDebt();
+        uint256 actualRepayAmount = _repayAmount == 0 ? totalDebt : _repayAmount;
+        if (actualRepayAmount > totalDebt) revert YoloHook__RepayExceedsDebt();
 
-        // First pay off interest, then principal
-        uint256 interestPayment = 0;
-        uint256 principalPayment = 0;
+        // Handle repayment in separate function
+        (uint256 interestPaid, uint256 principalPaid) = _processRepayment(position, _yoloAsset, actualRepayAmount);
 
-        if (position.accruedInterest > 0) {
-            // Determine how much interest to pay
-            interestPayment = repayAmount < position.accruedInterest ? repayAmount : position.accruedInterest;
-
-            // Update position's accrued interest
-            position.accruedInterest -= interestPayment;
-
-            // Burn interest payment from user
-            IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, interestPayment);
-
-            // Mint interest to treasury
-            IYoloSyntheticAsset(_yoloAsset).mint(treasury, interestPayment);
-        }
-
-        // Calculate principal payment (if any remains after interest payment)
-        principalPayment = repayAmount - interestPayment;
-
-        if (principalPayment > 0) {
-            // Update position's minted amount
-            position.yoloAssetMinted -= principalPayment;
-
-            // Burn principal payment from user
-            IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, principalPayment);
-        }
-
-        // Treat dust amounts as fully repaid (≤1 wei)
+        // Check if fully repaid (with dust handling)
         if (position.yoloAssetMinted <= 1 && position.accruedInterest <= 1) {
-            position.yoloAssetMinted = 0;
-            position.accruedInterest = 0;
-        }
-
-        // Check if the position is fully repaid
-        if (position.yoloAssetMinted == 0 && position.accruedInterest == 0) {
-            uint256 collateralToReturn;
-            if (_claimCollateral) {
-                // Auto-return collateral if requested
-                collateralToReturn = position.collateralSuppliedAmount;
-                position.collateralSuppliedAmount = 0;
-
-                // Check if this would exceed collateral cap after withdrawal
-                CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
-                if (colConfig.maxSupplyCap > 0) {
-                    // Additional check not strictly necessary for withdrawal, but good for consistency
-                    if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
-                        revert YoloHook__ExceedsCollateralCap();
-                    }
-                }
-
-                // Return collateral to user
-                IERC20(_collateral).safeTransfer(msg.sender, collateralToReturn);
-
-                // Remove position from user's positions list
-                _removeUserPositionKey(msg.sender, _collateral, _yoloAsset);
-            }
-
-            emit PositionFullyRepaid(msg.sender, _collateral, _yoloAsset, repayAmount, collateralToReturn);
+            _handleFullRepayment(position, _collateral, _yoloAsset, actualRepayAmount, _claimCollateral);
         } else {
             emit PositionPartiallyRepaid(
                 msg.sender,
                 _collateral,
                 _yoloAsset,
-                repayAmount,
-                interestPayment,
-                principalPayment,
+                actualRepayAmount,
+                interestPaid,
+                principalPaid,
                 position.yoloAssetMinted,
                 position.accruedInterest
             );
         }
+    }
+
+    function _processRepayment(UserPosition storage position, address yoloAsset, uint256 repayAmount)
+        private
+        returns (uint256 interestPaid, uint256 principalPaid)
+    {
+        // Interest payment first
+        if (position.accruedInterest > 0) {
+            interestPaid = repayAmount < position.accruedInterest ? repayAmount : position.accruedInterest;
+            position.accruedInterest -= interestPaid;
+
+            IYoloSyntheticAsset(yoloAsset).burn(msg.sender, interestPaid);
+            IYoloSyntheticAsset(yoloAsset).mint(treasury, interestPaid);
+        }
+
+        // Principal payment with remaining amount
+        principalPaid = repayAmount - interestPaid;
+        if (principalPaid > 0) {
+            position.yoloAssetMinted -= principalPaid;
+            IYoloSyntheticAsset(yoloAsset).burn(msg.sender, principalPaid);
+        }
+    }
+
+    function _handleFullRepayment(
+        UserPosition storage position,
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        bool claimCollateral
+    ) private {
+        position.yoloAssetMinted = 0;
+        position.accruedInterest = 0;
+
+        uint256 collateralToReturn = 0;
+        if (claimCollateral && position.collateralSuppliedAmount > 0) {
+            collateralToReturn = position.collateralSuppliedAmount;
+            position.collateralSuppliedAmount = 0;
+
+            IERC20(collateral).safeTransfer(msg.sender, collateralToReturn);
+            _removeUserPositionKey(msg.sender, collateral, yoloAsset);
+        }
+
+        emit PositionFullyRepaid(msg.sender, collateral, yoloAsset, repayAmount, collateralToReturn);
     }
 
     /**
@@ -832,112 +793,149 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _yoloAsset   The YoloAsset token address
      * @param   _repayAmount How much of the borrower’s debt to cover (0 == full debt)
      */
+    /**
+     * @dev     Liquidate an under‐collateralized position
+     * @param   _user        The borrower whose position is being liquidated
+     * @param   _collateral  The collateral token address
+     * @param   _yoloAsset   The YoloAsset token address
+     * @param   _repayAmount How much of the borrower's debt to cover (0 == full debt)
+     */
     function liquidate(address _user, address _collateral, address _yoloAsset, uint256 _repayAmount)
         external
         nonReentrant
-        whenNotPaused
     {
-        // 1) load config & position
+        // Early validation - all reverts first
         CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
         if (cfg.collateral == address(0)) revert YoloHook__InvalidPair();
 
         UserPosition storage pos = positions[_user][_collateral][_yoloAsset];
-        if (pos.borrower != _user) revert YoloHook__InvalidPosition();
+        // if (pos.borrower != _user) revert YoloHook__InvalidPosition();
+        if (pos.borrower == address(0)) revert YoloHook__InvalidPosition();
 
-        // 2) accrue interest so interest+principal is up to date
+        // Accrue interest and check solvency
         _accrueInterest(pos, pos.storedInterestRate);
-
-        // 3) verify it’s under-collateralized
         if (_isSolvent(pos, _collateral, _yoloAsset, cfg.ltv)) revert YoloHook__Solvent();
 
-        // 4) determine how much debt we’ll cover
+        // Calculate repayment amount
         uint256 debt = pos.yoloAssetMinted + pos.accruedInterest;
-        uint256 repayAmt = _repayAmount == 0 ? debt : _repayAmount;
-        if (repayAmt > debt) revert YoloHook__RepayExceedsDebt();
+        uint256 actualRepayAmount = _repayAmount == 0 ? debt : _repayAmount;
+        if (actualRepayAmount > debt) revert YoloHook__RepayExceedsDebt();
 
-        // 5) pull in YoloAsset from liquidator & burn
-        IERC20(_yoloAsset).safeTransferFrom(msg.sender, address(this), repayAmt);
-        IYoloSyntheticAsset(_yoloAsset).burn(address(this), repayAmt);
+        // Execute liquidation after all validation
+        _executeLiquidation(pos, cfg, _collateral, _yoloAsset, actualRepayAmount, _user);
+    }
 
-        // 6) split into interest vs principal
-        uint256 interestPaid = repayAmt <= pos.accruedInterest ? repayAmt : pos.accruedInterest;
-        pos.accruedInterest -= interestPaid;
-        uint256 principalPaid = repayAmt - interestPaid;
-        pos.yoloAssetMinted -= principalPaid;
+    /**
+     * @dev     Internal function to execute liquidation after validation
+     * @param   pos              The user position being liquidated
+     * @param   cfg              The pair configuration
+     * @param   collateral       The collateral token address
+     * @param   yoloAsset        The YoloAsset token address
+     * @param   repayAmount      The amount being repaid
+     * @param   user             The user being liquidated
+     */
+    function _executeLiquidation(
+        UserPosition storage pos,
+        CollateralToYoloAssetConfiguration storage cfg,
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        address user
+    ) private {
+        // Pull YoloAsset from liquidator and burn
+        IERC20(yoloAsset).safeTransferFrom(msg.sender, address(this), repayAmount);
+        IYoloSyntheticAsset(yoloAsset).burn(address(this), repayAmount);
 
-        // 7) figure out how much collateral to seize based on oracle prices
-        uint256 priceColl = yoloOracle.getAssetPrice(_collateral);
-        uint256 priceYol = yoloOracle.getAssetPrice(_yoloAsset);
-        // value in “oracle units” = repayAmt * priceYol
-        uint256 usdValueRepaid = repayAmt * priceYol;
-        // raw collateral units = value / priceColl
-        uint256 rawCollateralSeize = (usdValueRepaid + priceColl - 1) / priceColl; // Round up
-        // bonus for liquidator (penalty)
-        uint256 bonus = (rawCollateralSeize * cfg.liquidationPenalty) / PRECISION_DIVISOR;
-        uint256 totalSeize = rawCollateralSeize + bonus;
+        // Process debt reduction
+        (uint256 interestPaid, uint256 principalPaid) = _reduceLiquidatedDebt(pos, repayAmount);
+
+        // Calculate collateral seizure
+        uint256 totalSeize = _calculateCollateralSeizure(collateral, yoloAsset, repayAmount, cfg.liquidationPenalty);
+
         if (totalSeize > pos.collateralSuppliedAmount) revert YoloHook__InvalidSeizeAmount();
 
-        // 8) update the stored collateral
-        //    — we only deduct the raw portion; the bonus comes out of protocol’s buffer
+        // Update position
         pos.collateralSuppliedAmount -= totalSeize;
 
-        // 9) clean up if fully closed
+        // Clean up if fully liquidated
+        _cleanupLiquidatedPosition(pos, user, collateral, yoloAsset);
 
+        // Transfer seized collateral to liquidator
+        IERC20(collateral).safeTransfer(msg.sender, totalSeize);
+
+        emit Liquidated(user, collateral, yoloAsset, repayAmount, totalSeize);
+    }
+
+    /**
+     * @dev     Internal function to reduce debt during liquidation
+     * @param   pos          The position being liquidated
+     * @param   repayAmount  The amount being repaid
+     * @return  interestPaid The amount of interest paid
+     * @return  principalPaid The amount of principal paid
+     */
+    function _reduceLiquidatedDebt(UserPosition storage pos, uint256 repayAmount)
+        private
+        returns (uint256 interestPaid, uint256 principalPaid)
+    {
+        // Pay interest first
+        interestPaid = repayAmount <= pos.accruedInterest ? repayAmount : pos.accruedInterest;
+        pos.accruedInterest -= interestPaid;
+
+        // Then principal
+        principalPaid = repayAmount - interestPaid;
+        pos.yoloAssetMinted -= principalPaid;
+    }
+
+    /**
+     * @dev     Calculate the amount of collateral to seize
+     * @param   collateral          The collateral token address
+     * @param   yoloAsset           The YoloAsset token address
+     * @param   repayAmount         The amount being repaid
+     * @param   liquidationPenalty  The liquidation penalty percentage
+     * @return  totalSeize          The total collateral to seize
+     */
+    function _calculateCollateralSeizure(
+        address collateral,
+        address yoloAsset,
+        uint256 repayAmount,
+        uint256 liquidationPenalty
+    ) private view returns (uint256 totalSeize) {
+        // Get oracle prices
+        uint256 priceColl = yoloOracle.getAssetPrice(collateral);
+        uint256 priceYol = yoloOracle.getAssetPrice(yoloAsset);
+
+        // Calculate value repaid
+        uint256 usdValueRepaid = repayAmount * priceYol;
+
+        // Calculate raw collateral amount (round up)
+        uint256 rawCollateralSeize = (usdValueRepaid + priceColl - 1) / priceColl;
+
+        // Add liquidation bonus
+        uint256 bonus = (rawCollateralSeize * liquidationPenalty) / PRECISION_DIVISOR;
+        totalSeize = rawCollateralSeize + bonus;
+    }
+
+    /**
+     * @dev     Clean up position if fully liquidated
+     * @param   pos         The position to clean up
+     * @param   user        The user address
+     * @param   collateral  The collateral address
+     * @param   yoloAsset   The yolo asset address
+     */
+    function _cleanupLiquidatedPosition(UserPosition storage pos, address user, address collateral, address yoloAsset)
+        private
+    {
         // Treat dust amounts as fully liquidated (≤1 wei)
         if (pos.yoloAssetMinted <= 1 && pos.accruedInterest <= 1) {
             pos.yoloAssetMinted = 0;
             pos.accruedInterest = 0;
         }
 
+        // If position is fully cleared, delete it
         if (pos.yoloAssetMinted == 0 && pos.accruedInterest == 0 && pos.collateralSuppliedAmount == 0) {
-            delete positions[_user][_collateral][_yoloAsset];
-            _removeUserPositionKey(_user, _collateral, _yoloAsset);
+            delete positions[user][collateral][yoloAsset];
+            _removeUserPositionKey(user, collateral, yoloAsset);
         }
-
-        // 10) transfer seized collateral to liquidator
-        IERC20(_collateral).safeTransfer(msg.sender, totalSeize);
-
-        emit Liquidated(_user, _collateral, _yoloAsset, repayAmt, totalSeize);
-    }
-
-    /**
-     * @dev     Executes a single flash loan for a YoloAsset.
-     * @param   _yoloAsset  The address of the YoloAsset to borrow.
-     * @param   _amount     The amount of the asset to borrow.
-     * @param   _data       The data to be passed to the IFlashBorrower contract for execution
-     */
-    function simpleFlashLoan(address _yoloAsset, uint256 _amount, bytes calldata _data)
-        external
-        nonReentrant
-        whenNotPaused
-    {
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-
-        // Check if yolo asset is paused
-        YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
-        if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
-
-        // Check if flash loan amount exceeds the cap
-        if (assetConfig.maxFlashLoanableAmount > 0 && _amount > assetConfig.maxFlashLoanableAmount) {
-            revert YoloHook__ExceedsFlashLoanCap();
-        }
-
-        uint256 fee = (_amount * flashLoanFee) / PRECISION_DIVISOR;
-        uint256 totalRepayment = _amount + fee;
-
-        // Transfer the flash loan to the borrower
-        IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _amount);
-
-        // Call the borrower's callback function
-        IFlashBorrower(msg.sender).onFlashLoan(msg.sender, _yoloAsset, _amount, fee, _data);
-
-        // Ensure repayment
-        IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, totalRepayment);
-
-        // Mint fee to protocol treasury
-        IYoloSyntheticAsset(_yoloAsset).mint(treasury, fee);
-
-        emit FlashLoanExecuted(msg.sender, _yoloAsset, _amount, fee);
     }
 
     /**
@@ -957,7 +955,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256[] memory totalRepayments = new uint256[](_yoloAssets.length);
 
         // Mint flash loans to the borrower
-        for (uint256 i = 0; i < _yoloAssets.length; i++) {
+        for (uint256 i = 0; i < _yoloAssets.length;) {
             if (!isYoloAsset[_yoloAssets[i]]) revert YoloHook__NotYoloAsset();
 
             YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAssets[i]];
@@ -975,24 +973,31 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
             // Mint the YoloAsset to the borrower
             IYoloSyntheticAsset(_yoloAssets[i]).mint(msg.sender, _amounts[i]);
+
+            unchecked {
+                ++i;
+            }
         }
 
         // Call the borrower's callback function
         IFlashBorrower(msg.sender).onBatchFlashLoan(msg.sender, _yoloAssets, _amounts, fees, _data);
 
         // Burn the amount + fee from the borrower and mint fee to the treasury
-        for (uint256 i = 0; i < _yoloAssets.length; i++) {
+        for (uint256 i = 0; i < _yoloAssets.length;) {
             // Ensure repayment
             IYoloSyntheticAsset(_yoloAssets[i]).burn(msg.sender, totalRepayments[i]);
 
             // Mint the fee to the protocol treasury
             IYoloSyntheticAsset(_yoloAssets[i]).mint(treasury, fees[i]);
+            unchecked {
+                ++i;
+            }
         }
 
-        emit BatchFlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
+        emit FlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
     }
 
-    function burnPendings() public {
+    function burnPendings() external {
         if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
 
         poolManager.unlock(abi.encode(CallbackData(2, "0x")));
@@ -1001,6 +1006,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ******************************//
     // *** ANCHOR POOL FUNCTIONS *** //
     // ***************************** //
+
     /**
      * @notice  Add liquidity to the anchor pool pair (USDC/USY) with ratio enforcement
      * @param   _maxUsdcAmount Maximum USDC amount user wants to add
@@ -1152,7 +1158,7 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 anchorPoolLPBalance[receiver] += liquidity;
                 anchorPoolLiquiditySupply += liquidity;
             }
-            emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
+            // emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
 
             return abi.encode(sender, receiver, usdcUsed, usyUsed, liquidity);
         } else if (action == 1) {
@@ -1182,17 +1188,12 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
             // For USY: Burn our claim tokens and give real USY to user
             usyCurrency.take(poolManager, receiver, usyAmount, false);
 
-            emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
+            // emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
 
             return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
         } else if (action == 2) {
             // Case C: Burn pending burnt tokens
-            Currency c = Currency.wrap(assetToBurn);
-            c.settle(poolManager, address(this), amountToBurn, true);
-            c.take(poolManager, address(this), amountToBurn, false);
-            IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
-            assetToBurn = address(0);
-            amountToBurn = 0;
+            _burnPending();
         } else {
             revert YoloHook__UnknownUnlockActionError();
         }
@@ -1252,12 +1253,13 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ********************** //
     /**
      * @notice  Returns the permissions for this hook.
+     * @dev     Enable all actions to enture future upgradability.
      */
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: true,
             afterInitialize: true,
-            beforeAddLiquidity: true, // Blocks directly adding liquidity
+            beforeAddLiquidity: true,
             afterAddLiquidity: true,
             beforeRemoveLiquidity: true,
             afterRemoveLiquidity: true,
@@ -1272,307 +1274,154 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         });
     }
 
-    /**
-     * @notice  Revert to avoid directly adding liquidity to the PoolManager.
-     */
-    function beforeModifyLiquidity(PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        external
-        pure
-        returns (bytes4)
-    {
-        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook__MustAddLiquidityThroughHook();
-    }
-
-    /**
-     * @notice  Revert to avoid directly adding liquidity to the PoolManager.
-     */
-    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        internal
-        pure
-        override
-        returns (bytes4)
-    {
-        // Guard clause: revert if someone tries to add liquidity directly through PoolManager / PositionsManager
-        revert YoloHook__MustAddLiquidityThroughHook();
-    }
-
-    /**
-     * @notice  Executes stable swap for anchor pool and oracle swap for synthetic asset pools. Return a BalanceDelta
-     *          so that PoolManager skips the default maths
-     */
+    // Backup
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // A. Burn previous pending burn tokens
-        if (assetToBurn != address(0)) {
-            // Burn previous pending burnt tokens
-            Currency c = Currency.wrap(assetToBurn);
-            c.settle(poolManager, address(this), amountToBurn, true);
-            c.take(poolManager, address(this), amountToBurn, false);
-            IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn);
-            assetToBurn = address(0);
-            amountToBurn = 0;
-        }
+        // Burn pending if needed
+        if (assetToBurn != address(0)) _burnPending();
 
-        // B. Determine the pool and the swap context
         bytes32 poolId = PoolId.unwrap(key.toId());
-
-        // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
-        BeforeSwapDelta beforeSwapDelta;
-
-        // Tokens Instance
-        Currency currencyIn;
-        Currency currencyOut;
-        address tokenInAddr;
-        address tokenOutAddr;
-
-        // C. Branch out path for anchor pool and other synthetic pools
+        bool exactIn = params.amountSpecified < 0;
 
         if (isAnchorPool[poolId]) {
-            // C-1. Execute stable swap if it's anchor pool
-
-            // 1. Parse Input
+            // Scoped variables for anchor pool
             if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
                 revert YoloHook__InsufficientReserves();
             }
 
-            bool usdcToUsy = (params.zeroForOne == (anchorPoolToken0 == usdc));
-            currencyIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
-            currencyOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
+            bool usdcToUsy = params.zeroForOne == (anchorPoolToken0 == usdc);
+            Currency cIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
+            Currency cOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
 
-            uint256 reserveInRaw = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
-            uint256 reserveOutRaw = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
+            uint256 rIn = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
+            uint256 rOut = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
+            uint256 sIn = usdcToUsy ? USDC_SCALE_UP : 1;
+            uint256 sOut = usdcToUsy ? 1 : USDC_SCALE_UP;
 
-            uint256 scaleUpIn = usdcToUsy ? USDC_SCALE_UP : 1;
-            uint256 scaleUpOut = usdcToUsy ? 1 : USDC_SCALE_UP;
+            uint256 gIn;
+            uint256 nIn;
+            uint256 f;
+            uint256 out;
 
-            uint256 reserveInWad = reserveInRaw * scaleUpIn;
-            uint256 reserveOutWad = reserveOutRaw * scaleUpOut;
-
-            // 2. Quote
-            uint256 grossInRaw;
-            uint256 netInRaw;
-            uint256 feeRaw;
-            uint256 amountOutRaw;
-
-            if (params.amountSpecified < 0) {
-                // 2A. Exact Input
-                grossInRaw = uint256(-params.amountSpecified);
-                uint256 grossInWad = grossInRaw * scaleUpIn;
-
-                uint256 feeWad = (grossInWad * stableSwapFee) / PRECISION_DIVISOR;
-                uint256 netInWad = grossInWad - feeWad;
-
-                uint256 outWad = _calculateStableSwapOutputInternal(netInWad, reserveInWad, reserveOutWad);
-                if (outWad == 0) revert YoloHook__InvalidOutput();
-
-                amountOutRaw = outWad / scaleUpOut;
-                feeRaw = feeWad / scaleUpIn;
-                netInRaw = grossInRaw - feeRaw;
+            if (exactIn) {
+                gIn = uint256(-params.amountSpecified);
+                uint256 gInW = gIn * sIn;
+                uint256 fW = (gInW * stableSwapFee) / PRECISION_DIVISOR;
+                uint256 nInW = gInW - fW;
+                uint256 outW = StableMathLib.calculateStableSwapOutput(nInW, rIn * sIn, rOut * sOut);
+                if (outW == 0) revert YoloHook__InvalidOutput();
+                out = outW / sOut;
+                f = fW / sIn;
+                nIn = gIn - f;
             } else {
-                // 2B. Exact Output
-                amountOutRaw = uint256(params.amountSpecified);
-                uint256 desiredOutWad = amountOutRaw * scaleUpOut;
-
-                uint256 netInWad = _calculateStableSwapInputInternal(desiredOutWad, reserveInWad, reserveOutWad);
-
-                uint256 grossInWad =
-                    (netInWad * PRECISION_DIVISOR + (PRECISION_DIVISOR - 1)) / (PRECISION_DIVISOR - stableSwapFee); // ceil-div
-                uint256 feeWad = grossInWad - netInWad;
-
-                grossInRaw = grossInWad / scaleUpIn;
-                feeRaw = feeWad / scaleUpIn;
-                netInRaw = grossInRaw - feeRaw;
+                out = uint256(params.amountSpecified);
+                uint256 nInW = StableMathLib.calculateStableSwapInput(out * sOut, rIn * sIn, rOut * sOut);
+                uint256 gInW = (nInW * PRECISION_DIVISOR + PRECISION_DIVISOR - 1) / (PRECISION_DIVISOR - stableSwapFee);
+                gIn = gInW / sIn;
+                f = (gInW - nInW) / sIn;
+                nIn = gIn - f;
             }
 
-            // 3. Update Reserves
+            // Update reserves
             if (usdcToUsy) {
-                totalAnchorReserveUSDC = reserveInRaw + netInRaw;
-                totalAnchorReserveUSY = reserveOutRaw - amountOutRaw;
+                totalAnchorReserveUSDC = rIn + nIn;
+                totalAnchorReserveUSY = rOut - out;
             } else {
-                totalAnchorReserveUSY = reserveInRaw + netInRaw;
-                totalAnchorReserveUSDC = reserveOutRaw - amountOutRaw;
+                totalAnchorReserveUSY = rIn + nIn;
+                totalAnchorReserveUSDC = rOut - out;
             }
 
-            // 4. Construct BeforeSwapDelta
-            int128 dSpecified;
-            int128 dUnspecified;
+            // Settlement
+            cIn.take(poolManager, address(this), nIn, true);
+            if (f > 0) cIn.take(poolManager, treasury, f, false);
+            cOut.settle(poolManager, address(this), out, true);
 
-            if (params.amountSpecified < 0) {
-                // Exact Input
-                dSpecified = int128(uint128(grossInRaw)); // Positive
-                dUnspecified = -int128(uint128(amountOutRaw)); // Negative
-            } else {
-                // Exact Output
-                dSpecified = -int128(uint128(amountOutRaw)); // negative
-                dUnspecified = int128(uint128(grossInRaw)); // positive
-            }
-            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
-
-            // 5. Currency Settlement
-
-            Currency cIn = currencyIn;
-            Currency cOut = currencyOut;
-
-            cIn.take(poolManager, address(this), netInRaw, true);
-            if (feeRaw != 0) {
-                cIn.take(poolManager, treasury, feeRaw, false);
-            }
-            cOut.settle(poolManager, address(this), amountOutRaw, true);
-
-            emit AnchorSwapExecuted(
+            // Emit and return
+            emit HookSwap(
                 poolId,
                 sender,
-                sender,
-                params.zeroForOne,
-                Currency.unwrap(currencyIn),
-                grossInRaw,
-                Currency.unwrap(currencyOut),
-                amountOutRaw,
-                feeRaw
+                params.zeroForOne ? int128(uint128(gIn)) : -int128(uint128(out)),
+                params.zeroForOne ? -int128(uint128(out)) : int128(uint128(gIn)),
+                params.zeroForOne ? uint128(f) : 0,
+                params.zeroForOne ? 0 : uint128(f)
             );
 
-            // 6. Emit HookSwap event based on Uniswap V4 format
-
-            uint128 in128 = uint128(grossInRaw); // safe because grossInRaw < 2¹²⁸
-            uint128 out128 = uint128(amountOutRaw); // idem
-            uint128 fee128 = uint128(feeRaw);
-
-            int128 amount0;
-            int128 amount1;
-            uint128 fee0;
-            uint128 fee1;
-
-            if (params.zeroForOne) {
-                // token0  →  token1
-                amount0 = int128(in128); // user pays token0
-                amount1 = -int128(out128); // user receives token1
-                fee0 = fee128; // fee taken in token0
-                fee1 = 0;
-            } else {
-                // token1  →  token0
-                amount0 = -int128(out128); // user receives token0
-                amount1 = int128(in128); // user pays token1
-                fee0 = 0;
-                fee1 = fee128; // fee taken in token1
-            }
-
-            emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
-
-            return (this.beforeSwap.selector, beforeSwapDelta, 0);
+            return (
+                this.beforeSwap.selector,
+                toBeforeSwapDelta(
+                    exactIn ? int128(uint128(gIn)) : -int128(uint128(out)),
+                    exactIn ? -int128(uint128(out)) : int128(uint128(gIn))
+                ),
+                0
+            );
         } else if (isSyntheticPool[poolId]) {
-            // Execute stynthetic swap (oracle swap) if it's synthetic pool
+            // Scoped variables for synthetic pool
+            Currency cIn;
+            Currency cOut;
+            (cIn, cOut) = params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
 
-            // 1. Pick the input / output currencies.
-            (Currency cIn, Currency cOut) =
-                params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
-            address tokenIn = Currency.unwrap(cIn);
-            address tokenOut = Currency.unwrap(cOut);
+            address tIn = Currency.unwrap(cIn);
+            address tOut = Currency.unwrap(cOut);
 
-            // 2. Determine is exact-input or exact-output
-            bool isExactInput = params.amountSpecified < 0 ? true : false;
+            uint256 gIn;
+            uint256 nIn;
+            uint256 f;
+            uint256 out;
 
-            uint256 grossInputAmount;
-            uint256 netInputAmount;
-            uint256 netOutputAmount;
-            uint256 fee;
-
-            // 3. Branch out exact-input / exact-output
-            if (isExactInput) {
-                // 3A. Exact-input branch: Calculate Output
-                grossInputAmount = uint256(-int256(params.amountSpecified));
-                fee = grossInputAmount * syntheticSwapFee / PRECISION_DIVISOR;
-                netInputAmount = grossInputAmount - fee;
-                netOutputAmount =
-                    yoloOracle.getAssetPrice(tokenIn) * netInputAmount / yoloOracle.getAssetPrice(tokenOut);
+            if (exactIn) {
+                gIn = uint256(-int256(params.amountSpecified));
+                f = gIn * syntheticSwapFee / PRECISION_DIVISOR;
+                nIn = gIn - f;
+                out = yoloOracle.getAssetPrice(tIn) * nIn / yoloOracle.getAssetPrice(tOut);
             } else {
-                // 3B. Exact-output branch: Calculate Input
-                netOutputAmount = uint256(int256(params.amountSpecified));
-                netInputAmount =
-                    yoloOracle.getAssetPrice(tokenOut) * netOutputAmount / yoloOracle.getAssetPrice(tokenIn); // =1.4084507\times10^{24}
-                uint256 numerator = netInputAmount * syntheticSwapFee;
-                uint256 denominator = PRECISION_DIVISOR - syntheticSwapFee;
-
-                fee = (numerator + denominator - 1) / denominator;
-                grossInputAmount = netInputAmount + fee;
+                out = uint256(int256(params.amountSpecified));
+                nIn = yoloOracle.getAssetPrice(tOut) * out / yoloOracle.getAssetPrice(tIn);
+                f = (nIn * syntheticSwapFee + PRECISION_DIVISOR - syntheticSwapFee - 1)
+                    / (PRECISION_DIVISOR - syntheticSwapFee);
+                gIn = nIn + f;
             }
 
-            // 4. Pull the amount from the user into PoolManager
-            cIn.take(poolManager, address(this), netInputAmount, true);
+            // Settlement
+            cIn.take(poolManager, address(this), nIn, true);
+            if (f > 0) cIn.take(poolManager, treasury, f, true);
+            IYoloSyntheticAsset(tOut).mint(address(this), out);
+            cOut.settle(poolManager, address(this), out, false);
 
-            // 5. Pull fee to treasury if fee is non-zero
-            if (fee > 0) {
-                cIn.take(poolManager, treasury, fee, true);
-            }
+            assetToBurn = tIn;
+            amountToBurn = nIn;
 
-            // 6. Mint assets that needs to be sent to user, and settle with PoolManager
-            IYoloSyntheticAsset(tokenOut).mint(address(this), netOutputAmount);
-            cOut.settle(poolManager, address(this), netOutputAmount, false);
-
-            // 6A. We cant pull and burn the asset in beforeSwap, that's why we need to burn it in afterSwap
-            assetToBurn = tokenIn;
-            amountToBurn = netInputAmount;
-
-            emit SyntheticSwapExecuted(
-                poolId, sender, sender, params.zeroForOne, tokenIn, grossInputAmount, tokenOut, netOutputAmount, fee
+            // Emit and return
+            emit HookSwap(
+                poolId,
+                sender,
+                params.zeroForOne ? int128(uint128(gIn)) : -int128(uint128(out)),
+                params.zeroForOne ? -int128(uint128(out)) : int128(uint128(gIn)),
+                params.zeroForOne ? uint128(f) : 0,
+                params.zeroForOne ? 0 : uint128(f)
             );
 
-            // 7. Construct BeforeSwapDelta
-            int128 dSpecified;
-            int128 dUnspecified;
-
-            if (params.amountSpecified < 0) {
-                // Exact Input
-                dSpecified = int128(uint128(grossInputAmount)); // positive
-                dUnspecified = -int128(uint128(netOutputAmount)); // negative
-            } else {
-                // Exact Output
-                dSpecified = -int128(uint128(netOutputAmount)); // negative
-                dUnspecified = int128(uint128(grossInputAmount)); // positive
-            }
-            beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
-
-            // 8. Emit HookSwap event based on Uniswap V4 format
-            uint128 in128 = uint128(grossInputAmount);
-            uint128 out128 = uint128(netOutputAmount);
-            uint128 fee128 = uint128(fee);
-
-            int128 amount0;
-            int128 amount1;
-            uint128 fee0;
-            uint128 fee1;
-
-            if (params.zeroForOne) {
-                // token0  →  token1
-                amount0 = int128(in128); // user pays token0
-                amount1 = -int128(out128); // user receives token1
-                fee0 = fee128; // fee taken in token0
-                fee1 = 0;
-            } else {
-                // token1  →  token0
-                amount0 = -int128(out128); // user receives token0
-                amount1 = int128(in128); // user pays token1
-                fee0 = 0;
-                fee1 = fee128; // fee taken in token1
-            }
-
-            emit HookSwap(poolId, sender, amount0, amount1, fee0, fee1);
-
-            return (this.beforeSwap.selector, beforeSwapDelta, 0);
+            return (
+                this.beforeSwap.selector,
+                toBeforeSwapDelta(
+                    exactIn ? int128(uint128(gIn)) : -int128(uint128(out)),
+                    exactIn ? -int128(uint128(out)) : int128(uint128(gIn))
+                ),
+                0
+            );
         } else {
             revert YoloHook__InvalidPoolId();
         }
     }
 
     function _afterSwap(
-        address, // sender   (unused)
-        PoolKey calldata, // key      (unused)
-        SwapParams calldata, // params   (unused)
-        BalanceDelta, // delta    (unused)
-        bytes calldata // hookData (unused)
+        address, // unused
+        PoolKey calldata, // unused
+        SwapParams calldata, // unused
+        BalanceDelta, // unused
+        bytes calldata // unused
     ) internal override returns (bytes4, int128) {
         return (this.afterSwap.selector, int128(0));
     }
@@ -1580,28 +1429,6 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ***********************//
     // *** VIEW FUNCTIONS *** //
     // ********************** //
-    /**
-     * @notice Get anchor pool reserves
-     */
-    function getAnchorReserves() external view returns (uint256 usdcReserve, uint256 usyReserve) {
-        return (totalAnchorReserveUSDC, totalAnchorReserveUSY);
-    }
-
-    /**
-     * @notice  Calculate optimal liquidity amounts (view function)
-     * @param   _usdcAmount  Max USDC user wants to provide
-     * @param   _usyAmount   Max USY user wants to provide
-     * @return  usdcUsed    Actual USDC that will be used
-     * @return  usyUsed     Actual USY that will be used
-     * @return  liquidity   LP tokens that will be minted
-     */
-    function calculateOptimalLiquidity(uint256 _usdcAmount, uint256 _usyAmount)
-        external
-        view
-        returns (uint256 usdcUsed, uint256 usyUsed, uint256 liquidity)
-    {
-        return _quoteAdd(_usdcAmount, _usyAmount);
-    }
 
     // ***************************//
     // *** INTERNAL FUNCTIONS *** //
@@ -1609,12 +1436,15 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     function _removeFromArray(address[] storage arr, address elem) internal {
         uint256 len = arr.length;
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i = 0; i < len;) {
             if (arr[i] == elem) {
                 // swap with last element and pop
                 arr[i] = arr[len - 1];
                 arr.pop();
                 break;
+            }
+            unchecked {
+                ++i;
             }
         }
     }
@@ -1627,43 +1457,16 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
      */
     function _removeUserPositionKey(address _user, address _collateral, address _yoloAsset) internal {
         UserPositionKey[] storage keys = userPositionKeys[_user];
-        for (uint256 i = 0; i < keys.length; i++) {
+        for (uint256 i = 0; i < keys.length;) {
             if (keys[i].collateral == _collateral && keys[i].yoloAsset == _yoloAsset) {
                 // Swap with last element and pop
                 keys[i] = keys[keys.length - 1];
                 keys.pop();
                 break;
             }
-        }
-    }
-
-    function _quoteAdd(uint256 rawUsdc, uint256 usy)
-        internal
-        view
-        returns (uint256 usdcOut, uint256 usyOut, uint256 lpOut)
-    {
-        if (anchorPoolLiquiditySupply == 0) {
-            usdcOut = rawUsdc;
-            usyOut = usy;
-            lpOut = _sqrt(_toWadUSDC(usdcOut) * usyOut) - MINIMUM_LIQUIDITY;
-        } else {
-            uint256 wadResUsdc = _toWadUSDC(totalAnchorReserveUSDC);
-            uint256 wadResUsy = totalAnchorReserveUSY;
-
-            uint256 usdcReq = (usy * wadResUsdc + wadResUsy - 1) / wadResUsy;
-            uint256 usyReq = (rawUsdc * wadResUsy + wadResUsdc - 1) / wadResUsdc;
-
-            if (usdcReq <= rawUsdc) {
-                usdcOut = usdcReq;
-                usyOut = usy;
-            } else {
-                usdcOut = rawUsdc;
-                usyOut = usyReq;
+            unchecked {
+                ++i;
             }
-
-            uint256 lp0 = _toWadUSDC(usdcOut) * anchorPoolLiquiditySupply / wadResUsdc;
-            uint256 lp1 = usyOut * anchorPoolLiquiditySupply / wadResUsy;
-            lpOut = lp0 < lp1 ? lp0 : lp1;
         }
     }
 
@@ -1698,10 +1501,16 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         return _wad / USDC_SCALE_UP;
     }
 
-    // **************************************************//
-    // *** INTERNAL FUNCTIONS - SYNTHETIC BORROWINGS *** //
-    // ************************************************* //
+    // ***************************//
+    // *** INTERNAL FUNCTIONS *** //
+    //*************************** //
 
+    /**
+     * @notice  Internal function to accrue interest for a user's position.
+     * @dev     This function changes state.
+     * @param   _pos        The position of the user from storage.
+     * @param   _rate       The interest rate to apply.
+     */
     function _accrueInterest(UserPosition storage _pos, uint256 _rate) internal {
         if (_pos.yoloAssetMinted == 0) {
             _pos.lastUpdatedTimeStamp = block.timestamp;
@@ -1709,10 +1518,18 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         }
         uint256 dt = block.timestamp - _pos.lastUpdatedTimeStamp;
         // simple pro-rata APR: principal * rate * dt / (1yr * PRECISION_DIVISOR)
-        _pos.accruedInterest += (_pos.yoloAssetMinted * _rate * dt) / (365 days * PRECISION_DIVISOR);
+        _pos.accruedInterest += (_pos.yoloAssetMinted * _rate * dt) / (YEAR * PRECISION_DIVISOR);
         _pos.lastUpdatedTimeStamp = block.timestamp;
     }
 
+    /**
+     * @notice  Internal function check whether user is solvent at a given state.
+     * @dev     This function changes state.
+     * @param   _pos            The position of the user from at the given timeframe & state.
+     * @param   _collateral     The collateral asset address.
+     * @param   _yoloAsset      The yolo asset address.
+     * @param   _ltv            The loan-to-value ratio to check against.
+     */
     function _isSolvent(UserPosition storage _pos, address _collateral, address _yoloAsset, uint256 _ltv)
         internal
         view
@@ -1729,124 +1546,419 @@ contract YoloHookTemp is BaseHook, ReentrancyGuard, Ownable, Pausable {
         return debtVal * PRECISION_DIVISOR <= colVal * _ltv;
     }
 
-    // ******************************************//
-    // *** INTERNAL FUNCTIONS - STABLE MATHS *** //
-    // ***************************************** //
+    /**
+     * @notice  Internal function to burn pending tokens.
+     * @dev     Since the asset settlement only happens after the router has settled, we need to
+     *          keep pending tokens in memory and burn in either independantly or in the next swap.
+     */
+    function _burnPending() internal {
+        Currency c = Currency.wrap(assetToBurn);
+        c.settle(poolManager, address(this), amountToBurn, true); // burn the claim-tokens
+        c.take(poolManager, address(this), amountToBurn, false); // pull the real tokens
+        IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn); // burn the real tokens
 
-    function _getK_stable(uint256 x_18d, uint256 y_18d) internal pure returns (uint256 k_18d) {
-        if (x_18d == 0 || y_18d == 0) return 0;
-        uint256 xy_P = (x_18d * y_18d) / MATH_PRECISION;
-        uint256 x_sq_P = (x_18d * x_18d) / MATH_PRECISION;
-        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
-        k_18d = (xy_P * (x_sq_P + y_sq_P)) / MATH_PRECISION;
-        return k_18d;
-    }
-
-    function _f_stable(uint256 x0_18d, uint256 y_18d) private pure returns (uint256) {
-        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
-        uint256 y_cubed_P2 = (y_sq_P * y_18d) / MATH_PRECISION;
-        uint256 term1 = (x0_18d * y_cubed_P2) / MATH_PRECISION;
-
-        uint256 x0_sq_P = (x0_18d * x0_18d) / MATH_PRECISION;
-        uint256 x0_cubed_P2 = (x0_sq_P * x0_18d) / MATH_PRECISION;
-        uint256 term2 = (y_18d * x0_cubed_P2) / MATH_PRECISION;
-        return term1 + term2;
-    }
-
-    function _d_stable(uint256 x0_18d, uint256 y_18d) internal pure returns (uint256) {
-        uint256 x0_cubed_P2 = (((x0_18d * x0_18d) / MATH_PRECISION) * x0_18d) / MATH_PRECISION;
-
-        uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
-        uint256 x0_y_sq_P2 = (x0_18d * y_sq_P) / MATH_PRECISION;
-
-        if (x0_y_sq_P2 > type(uint256).max / 3) {
-            revert YoloHook__MathOverflow();
-        }
-        uint256 term2_3x = 3 * x0_y_sq_P2;
-
-        uint256 derivative = x0_cubed_P2 + term2_3x;
-        if (derivative == 0) revert YoloHook__StableswapConvergenceError();
-        return derivative;
-    }
-
-    function _getY_stable(uint256 x0_18d, uint256 k_18d, uint256 y_guess_18d)
-        internal
-        pure
-        returns (uint256 y_new_18d)
-    {
-        y_new_18d = y_guess_18d;
-        if (x0_18d == 0) {
-            if (k_18d > 0) revert YoloHook__StableswapConvergenceError();
-            return 0;
-        }
-
-        for (uint256 i = 0; i < STABLESWAP_ITERATIONS; i++) {
-            uint256 y_prev = y_new_18d;
-            uint256 f_val = _f_stable(x0_18d, y_new_18d);
-            uint256 d_val = _d_stable(x0_18d, y_new_18d);
-
-            uint256 dy;
-            if (f_val < k_18d) {
-                dy = ((k_18d - f_val) * MATH_PRECISION) / d_val;
-                y_new_18d = y_new_18d + dy;
-            } else {
-                dy = ((f_val - k_18d) * MATH_PRECISION) / d_val;
-                if (dy > y_new_18d) {
-                    y_new_18d = 0;
-                } else {
-                    y_new_18d = y_new_18d - dy;
-                }
-            }
-
-            if (y_new_18d > y_prev) {
-                if (y_new_18d - y_prev <= 1) break;
-            } else {
-                if (y_prev - y_new_18d <= 1) break;
-            }
-        }
-        return y_new_18d;
-    }
-
-    function _calculateStableSwapOutputInternal(uint256 netAmountIn_18d, uint256 reserveIn_18d, uint256 reserveOut_18d)
-        internal
-        pure
-        returns (uint256 amountOut_18d)
-    {
-        if (netAmountIn_18d == 0) return 0;
-        uint256 k_val = _getK_stable(reserveIn_18d, reserveOut_18d);
-
-        if (k_val == 0) {
-            revert YoloHook__InsufficientReserves();
-        }
-
-        uint256 newReserveIn_18d = reserveIn_18d + netAmountIn_18d;
-        uint256 newReserveOut_18d = _getY_stable(newReserveIn_18d, k_val, reserveOut_18d);
-
-        if (newReserveOut_18d >= reserveOut_18d) return 0;
-        amountOut_18d = reserveOut_18d - newReserveOut_18d;
-    }
-
-    function _calculateStableSwapInputInternal(uint256 amountOut_18d, uint256 reserveIn_18d, uint256 reserveOut_18d)
-        internal
-        pure
-        returns (uint256 netAmountIn_18d)
-    {
-        if (amountOut_18d == 0) return 0;
-        if (amountOut_18d >= reserveOut_18d) {
-            revert YoloHook__InsufficientReserves();
-        }
-
-        uint256 k_val = _getK_stable(reserveIn_18d, reserveOut_18d);
-        if (k_val == 0) {
-            revert YoloHook__InsufficientReserves();
-        }
-
-        uint256 newReserveOut_18d = reserveOut_18d - amountOut_18d;
-        uint256 newReserveIn_18d = _getY_stable(newReserveOut_18d, k_val, reserveIn_18d);
-
-        if (newReserveIn_18d <= reserveIn_18d) {
-            revert YoloHook__InvalidSwapAmounts();
-        }
-        netAmountIn_18d = newReserveIn_18d - reserveIn_18d;
+        assetToBurn = address(0);
+        amountToBurn = 0;
     }
 }
+
+// // Backup
+//     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+//         internal
+//         override
+//         returns (bytes4, BeforeSwapDelta, uint24)
+//     {
+//         // A. Burn previous pending burn tokens
+//         if (assetToBurn != address(0)) {
+//             _burnPending();
+//         }
+
+//         // B. Determine the pool and the swap context
+//         bytes32 poolId = PoolId.unwrap(key.toId());
+
+//         // BeforeSwapDelta to be returned to the PoolManager and bypass the default pool swap logic
+//         BeforeSwapDelta beforeSwapDelta;
+//         int128 dSpecified;
+//         int128 dUnspecified;
+
+//         // Determine whether exact input or exact output
+//         bool isExactInput = params.amountSpecified < 0 ? true : false;
+
+//         // Tokens Instance
+//         Currency currencyIn;
+//         Currency currencyOut;
+
+//         // Quote Storage
+//         uint256 grossInputAmount;
+//         uint256 netInputAmount;
+//         uint256 fee;
+//         uint256 amountOut;
+
+//         // C. Branch out path for anchor pool and other synthetic pools
+
+//         if (isAnchorPool[poolId]) {
+//             // C-1. Execute stable swap if it's anchor pool
+
+//             // 1. Parse Input
+//             if (totalAnchorReserveUSDC == 0 || totalAnchorReserveUSY == 0) {
+//                 revert YoloHook__InsufficientReserves();
+//             }
+//             bool usdcToUsy = (params.zeroForOne == (anchorPoolToken0 == usdc));
+//             currencyIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
+//             currencyOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
+
+//             uint256 reserveInRaw = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
+//             uint256 reserveOutRaw = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
+
+//             uint256 scaleUpIn = usdcToUsy ? USDC_SCALE_UP : 1;
+//             uint256 scaleUpOut = usdcToUsy ? 1 : USDC_SCALE_UP;
+
+//             uint256 reserveInWad = reserveInRaw * scaleUpIn;
+//             uint256 reserveOutWad = reserveOutRaw * scaleUpOut;
+
+//             // 2. Quote
+//             if (isExactInput) {
+//                 grossInputAmount = uint256(-params.amountSpecified);
+//                 uint256 grossInputWad = grossInputAmount * scaleUpIn; // Scale Up
+
+//                 uint256 feeWad = (grossInputWad * stableSwapFee) / PRECISION_DIVISOR;
+//                 uint256 netInputWad = grossInputWad - feeWad;
+
+//                 uint256 amountOutWad = StableMathLib.calculateStableSwapOutput(netInputWad, reserveInWad, reserveOutWad);
+
+//                 if (amountOutWad == 0) revert YoloHook__InvalidOutput();
+
+//                 amountOut = amountOutWad / scaleUpOut; // Scale Down
+//                 fee = feeWad / scaleUpIn; // Scale Down
+//                 netInputAmount = grossInputAmount - fee; // raw amount
+//             } else {
+//                 amountOut = uint256(params.amountSpecified);
+//                 uint256 amountOutWad = amountOut * scaleUpOut;
+//                 uint256 netInputWad = StableMathLib.calculateStableSwapInput(amountOutWad, reserveInWad, reserveOutWad);
+
+//                 uint256 grossInputWad =
+//                     (netInputWad * PRECISION_DIVISOR + (PRECISION_DIVISOR - 1)) / (PRECISION_DIVISOR - stableSwapFee); // ceil-div
+//                 uint256 feeWad = grossInputWad - netInputWad;
+
+//                 grossInputAmount = grossInputWad / scaleUpIn;
+//                 fee = feeWad / scaleUpIn;
+//                 netInputAmount = grossInputAmount - fee;
+//             }
+
+//             if (usdcToUsy) {
+//                 totalAnchorReserveUSDC = reserveInRaw + netInputAmount;
+//                 totalAnchorReserveUSY = reserveOutRaw - amountOut;
+//             } else {
+//                 totalAnchorReserveUSY = reserveInRaw + netInputAmount;
+//                 totalAnchorReserveUSDC = reserveOutRaw - amountOut;
+//             }
+
+//             currencyOut.settle(poolManager, address(this), amountOut, true);
+//         } else if (isSyntheticPool[poolId]) {
+//             // C-2. Execute oracle swap if it's synthetic pool
+
+//             // 1. Parse Input
+//             (currencyIn, currencyOut) =
+//                 params.zeroForOne ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
+//             address tokenIn = Currency.unwrap(currencyIn);
+//             address tokenOut = Currency.unwrap(currencyOut);
+
+//             // 2. Quote
+//             if (isExactInput) {
+//                 // 2A. Exact-input branch: Calculate Output
+//                 grossInputAmount = uint256(-int256(params.amountSpecified));
+//                 fee = grossInputAmount * syntheticSwapFee / PRECISION_DIVISOR;
+//                 netInputAmount = grossInputAmount - fee;
+//                 amountOut = yoloOracle.getAssetPrice(tokenIn) * netInputAmount / yoloOracle.getAssetPrice(tokenOut);
+//             } else {
+//                 // 2B. Exact-output branch: Calculate Input
+//                 amountOut = uint256(int256(params.amountSpecified));
+//                 netInputAmount = yoloOracle.getAssetPrice(tokenOut) * amountOut / yoloOracle.getAssetPrice(tokenIn); // =1.4084507\times10^{24}
+//                 uint256 numerator = netInputAmount * syntheticSwapFee;
+//                 uint256 denominator = PRECISION_DIVISOR - syntheticSwapFee;
+
+//                 fee = (numerator + denominator - 1) / denominator;
+//                 grossInputAmount = netInputAmount + fee;
+//             }
+
+//             // Mint assets that needs to be sent to user, and settle with PoolManager
+//             IYoloSyntheticAsset(tokenOut).mint(address(this), amountOut);
+//             currencyOut.settle(poolManager, address(this), amountOut, false);
+
+//             // We cant pull and burn the asset in beforeSwap, that's why we need to burn it in afterSwap
+//             assetToBurn = tokenIn;
+//             amountToBurn = netInputAmount;
+//         }
+
+//         // D. Settle Currency
+
+//         // Pull the amount from the user into PoolManager
+//         currencyIn.take(poolManager, address(this), netInputAmount, true);
+
+//         // Pull fee to treasury if fee is non-zero
+//         if (fee > 0) currencyIn.take(poolManager, treasury, fee, isSyntheticPool[poolId]); // Take in ERC-20 if anchor pool, other wise take in claim tokens
+
+//         // E. Construct BeforeSwapDelta
+
+//         if (params.amountSpecified < 0) {
+//             // Exact Input
+//             dSpecified = int128(uint128(grossInputAmount)); // positive
+//             dUnspecified = -int128(uint128(amountOut)); // negative
+//         } else {
+//             // Exact Output
+//             dSpecified = -int128(uint128(amountOut)); // negative
+//             dUnspecified = int128(uint128(grossInputAmount)); // positive
+//         }
+//         beforeSwapDelta = toBeforeSwapDelta(dSpecified, dUnspecified);
+
+//         // F. Emit HookSwap event based on Uniswap V4 format
+
+//         emit HookSwap(
+//             poolId,
+//             sender,
+//             /* amount0 */
+//             params.zeroForOne
+//                 ? int128(uint128(grossInputAmount)) // user pays token0
+//                 : -int128(uint128(amountOut)), // user receives token0
+//             /* amount1 */
+//             params.zeroForOne
+//                 ? -int128(uint128(amountOut)) // user receives token1
+//                 : int128(uint128(grossInputAmount)), // user pays token1
+//             /* fee0   */
+//             params.zeroForOne ? uint128(fee) : 0,
+//             /* fee1   */
+//             params.zeroForOne ? 0 : uint128(fee)
+//         );
+
+//         return (this.beforeSwap.selector, beforeSwapDelta, 0);
+//     }
+
+// function borrow(address _yoloAsset, uint256 _borrowAmount, address _collateral, uint256 _collateralAmount)
+//     external
+//     nonReentrant
+//     whenNotPaused
+// {
+//     // Validate parameters
+//     if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+//     if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
+//     if (_borrowAmount == 0 || _collateralAmount == 0) revert YoloHook__InsufficientAmount();
+
+//     // Check if this pair is configured
+//     CollateralToYoloAssetConfiguration storage pairConfig = pairConfigs[_collateral][_yoloAsset];
+//     if (pairConfig.collateral == address(0)) revert YoloHook__InvalidPair();
+
+//     // Transfer collateral from user to this contract
+//     IERC20(_collateral).safeTransferFrom(msg.sender, address(this), _collateralAmount);
+
+//     // Get the user position
+//     UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+
+//     // Handle new vs existing position
+//     if (position.borrower == address(0)) {
+//         // Initialize new position
+//         position.borrower = msg.sender;
+//         position.collateral = _collateral;
+//         position.yoloAsset = _yoloAsset;
+//         position.lastUpdatedTimeStamp = block.timestamp;
+//         position.storedInterestRate = pairConfig.interestRate;
+
+//         // Add to user's positions array - using key pair approach
+//         UserPositionKey memory key = UserPositionKey({collateral: _collateral, yoloAsset: _yoloAsset});
+//         userPositionKeys[msg.sender].push(key);
+//     } else {
+//         // Accrue interest on existing position at the current stored rate
+//         _accrueInterest(position, position.storedInterestRate);
+//         // Update to new interest rate
+//         position.storedInterestRate = pairConfig.interestRate;
+//     }
+
+//     // Update position
+//     position.collateralSuppliedAmount += _collateralAmount;
+//     position.yoloAssetMinted += _borrowAmount;
+
+//     CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+//     YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAsset];
+
+//     // Check if position would be solvent after minting
+//     if (!_isSolvent(position, _collateral, _yoloAsset, pairConfig.ltv)) revert YoloHook__NotSolvent();
+
+//     // Check if yolo asset is paused
+//     if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
+
+//     // Check if minting would exceed the asset's cap
+//     if (IYoloSyntheticAsset(_yoloAsset).totalSupply() + _borrowAmount > assetConfig.maxMintableCap) {
+//         revert YoloHook__ExceedsYoloAssetMintCap();
+//     }
+//     if (colConfig.maxSupplyCap <= 0) revert YoloHook__CollateralPaused();
+
+//     // Then check the actual cap
+//     if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
+//         revert YoloHook__ExceedsCollateralCap();
+//     }
+
+//     // Mint yolo asset to user
+//     IYoloSyntheticAsset(_yoloAsset).mint(msg.sender, _borrowAmount);
+
+//     // Emit event
+//     emit Borrowed(msg.sender, _collateral, _collateralAmount, _yoloAsset, _borrowAmount);
+// }
+
+// function repay(address _collateral, address _yoloAsset, uint256 _repayAmount, bool _claimCollateral)
+//     external
+//     nonReentrant
+// {
+//     // Get user position
+//     UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
+//     if (position.borrower != msg.sender) revert YoloHook__InvalidPosition();
+
+//     // Accrue interest at the stored rate (don't update rate)
+//     _accrueInterest(position, position.storedInterestRate);
+
+//     // Calculate total debt (principal + interest)
+//     uint256 totalDebt = position.yoloAssetMinted + position.accruedInterest;
+//     if (totalDebt == 0) revert YoloHook__NoDebt();
+
+//     // If repayAmount is 0, repay full debt
+//     uint256 repayAmount = _repayAmount == 0 ? totalDebt : _repayAmount;
+//     if (repayAmount > totalDebt) revert YoloHook__RepayExceedsDebt();
+
+//     // First pay off interest, then principal
+//     uint256 interestPayment = 0;
+//     uint256 principalPayment = 0;
+
+//     if (position.accruedInterest > 0) {
+//         // Determine how much interest to pay
+//         interestPayment = repayAmount < position.accruedInterest ? repayAmount : position.accruedInterest;
+
+//         // Update position's accrued interest
+//         position.accruedInterest -= interestPayment;
+
+//         // Burn interest payment from user
+//         IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, interestPayment);
+
+//         // Mint interest to treasury
+//         IYoloSyntheticAsset(_yoloAsset).mint(treasury, interestPayment);
+//     }
+
+//     // Calculate principal payment (if any remains after interest payment)
+//     principalPayment = repayAmount - interestPayment;
+
+//     if (principalPayment > 0) {
+//         // Update position's minted amount
+//         position.yoloAssetMinted -= principalPayment;
+
+//         // Burn principal payment from user
+//         IYoloSyntheticAsset(_yoloAsset).burn(msg.sender, principalPayment);
+//     }
+
+//     // Treat dust amounts as fully repaid (≤1 wei)
+//     if (position.yoloAssetMinted <= 1 && position.accruedInterest <= 1) {
+//         position.yoloAssetMinted = 0;
+//         position.accruedInterest = 0;
+//     }
+
+//     // Check if the position is fully repaid
+//     if (position.yoloAssetMinted == 0 && position.accruedInterest == 0) {
+//         uint256 collateralToReturn;
+//         if (_claimCollateral) {
+//             // Auto-return collateral if requested
+//             collateralToReturn = position.collateralSuppliedAmount;
+//             position.collateralSuppliedAmount = 0;
+
+//             // Check if this would exceed collateral cap after withdrawal
+//             CollateralConfiguration storage colConfig = collateralConfigs[_collateral];
+//             if (colConfig.maxSupplyCap > 0) {
+//                 // Additional check not strictly necessary for withdrawal, but good for consistency
+//                 if (IERC20(_collateral).balanceOf(address(this)) > colConfig.maxSupplyCap) {
+//                     revert YoloHook__ExceedsCollateralCap();
+//                 }
+//             }
+
+//             // Return collateral to user
+//             IERC20(_collateral).safeTransfer(msg.sender, collateralToReturn);
+
+//             // Remove position from user's positions list
+//             _removeUserPositionKey(msg.sender, _collateral, _yoloAsset);
+//         }
+
+//         emit PositionFullyRepaid(msg.sender, _collateral, _yoloAsset, repayAmount, collateralToReturn);
+//     } else {
+//         emit PositionPartiallyRepaid(
+//             msg.sender,
+//             _collateral,
+//             _yoloAsset,
+//             repayAmount,
+//             interestPayment,
+//             principalPayment,
+//             position.yoloAssetMinted,
+//             position.accruedInterest
+//         );
+//     }
+// }
+
+// function liquidate(address _user, address _collateral, address _yoloAsset, uint256 _repayAmount)
+//     external
+//     nonReentrant
+// {
+//     // 1) load config & position
+//     CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
+//     if (cfg.collateral == address(0)) revert YoloHook__InvalidPair();
+
+//     UserPosition storage pos = positions[_user][_collateral][_yoloAsset];
+//     if (pos.borrower != _user) revert YoloHook__InvalidPosition();
+
+//     // 2) accrue interest so interest+principal is up to date
+//     _accrueInterest(pos, pos.storedInterestRate);
+
+//     // 3) verify it’s under-collateralized
+//     if (_isSolvent(pos, _collateral, _yoloAsset, cfg.ltv)) revert YoloHook__Solvent();
+
+//     // 4) determine how much debt we’ll cover
+//     uint256 debt = pos.yoloAssetMinted + pos.accruedInterest;
+//     uint256 repayAmt = _repayAmount == 0 ? debt : _repayAmount;
+//     if (repayAmt > debt) revert YoloHook__RepayExceedsDebt();
+
+//     // 5) pull in YoloAsset from liquidator & burn
+//     IERC20(_yoloAsset).safeTransferFrom(msg.sender, address(this), repayAmt);
+//     IYoloSyntheticAsset(_yoloAsset).burn(address(this), repayAmt);
+
+//     // 6) split into interest vs principal
+//     uint256 interestPaid = repayAmt <= pos.accruedInterest ? repayAmt : pos.accruedInterest;
+//     pos.accruedInterest -= interestPaid;
+//     uint256 principalPaid = repayAmt - interestPaid;
+//     pos.yoloAssetMinted -= principalPaid;
+
+//     // 7) figure out how much collateral to seize based on oracle prices
+//     uint256 priceColl = yoloOracle.getAssetPrice(_collateral);
+//     uint256 priceYol = yoloOracle.getAssetPrice(_yoloAsset);
+//     // value in “oracle units” = repayAmt * priceYol
+//     uint256 usdValueRepaid = repayAmt * priceYol;
+//     // raw collateral units = value / priceColl
+//     uint256 rawCollateralSeize = (usdValueRepaid + priceColl - 1) / priceColl; // Round up
+//     // bonus for liquidator (penalty)
+//     uint256 bonus = (rawCollateralSeize * cfg.liquidationPenalty) / PRECISION_DIVISOR;
+//     uint256 totalSeize = rawCollateralSeize + bonus;
+//     if (totalSeize > pos.collateralSuppliedAmount) revert YoloHook__InvalidSeizeAmount();
+
+//     // 8) update the stored collateral
+//     //    — we only deduct the raw portion; the bonus comes out of protocol’s buffer
+//     pos.collateralSuppliedAmount -= totalSeize;
+
+//     // 9) clean up if fully closed
+
+//     // Treat dust amounts as fully liquidated (≤1 wei)
+//     if (pos.yoloAssetMinted <= 1 && pos.accruedInterest <= 1) {
+//         pos.yoloAssetMinted = 0;
+//         pos.accruedInterest = 0;
+//     }
+
+//     if (pos.yoloAssetMinted == 0 && pos.accruedInterest == 0 && pos.collateralSuppliedAmount == 0) {
+//         delete positions[_user][_collateral][_yoloAsset];
+//         _removeUserPositionKey(_user, _collateral, _yoloAsset);
+//     }
+
+//     // 10) transfer seized collateral to liquidator
+//     IERC20(_collateral).safeTransfer(msg.sender, totalSeize);
+
+//     emit Liquidated(_user, _collateral, _yoloAsset, repayAmt, totalSeize);
+// }
