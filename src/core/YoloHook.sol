@@ -21,6 +21,7 @@ import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsse
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {ITeller} from "@yolo/contracts/interfaces/ITeller.sol";
 /*---------- IMPORT CONTRACTS ----------*/
 import {YoloSyntheticAsset} from "@yolo/contracts/tokenization/YoloSyntheticAsset.sol";
 /*---------- IMPORT BASE CONTRACTS ----------*/
@@ -174,6 +175,22 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     /*----- Delegation Logic Contract -----*/
     address public syntheticAssetLogic;
+    address public rehypothecationLogic;
+
+    /*----- Rehypothecation Configuration -----*/
+    ITeller public usycTeller; // USYC Teller contract for rehypothecation
+    IERC20 public usyc; // USYC token contract
+    bool public rehypothecationEnabled; // Enable/disable rehypothecation
+    uint256 public rehypothecationRatio; // Max % of USDC to rehypothecate (e.g., 7500 = 75%)
+    uint256 public usycBalance; // Total USYC balance from rehypothecation
+
+    // Storage variables for cost basis tracking
+    uint256 private usycCostBasisUSDC; // Total USDC spent to acquire current USYC
+    uint256 private usycQuantity; // Total USYC tokens held (same as usycBalance, can merge)
+
+    // Storage variables for pending rehypothecation
+    uint256 private _pendingRehypoUSDC; // USDC to convert to USYC after swap
+    uint256 private _pendingDehypoUSDC; // USDC needed from USYC after swap
 
     // ***************//
     // *** EVENTS *** //
@@ -259,6 +276,20 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     event FlashLoanExecuted(address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees);
 
+    event RehypothecationStatusUpdated(bool enabled);
+
+    event RehypothecationConfigured(address indexed teller, address indexed usyc, uint256 ratio);
+
+    event RehypothecationExecuted(bool isBuy, uint256 amount, uint256 received);
+
+    event RehypothecationRebalanced(bool isBuy, uint256 amount, uint256 received);
+
+    event EmergencyUSYCWithdrawal(uint256 usycAmount, uint256 usdcReceived);
+
+    event RehypothecationGain(uint256 profit);
+
+    event RehypothecationLoss(uint256 loss);
+
     // ***************//
     // *** ERRORS *** //
     // ************** //
@@ -292,6 +323,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__InvalidSeizeAmount();
     error YoloHook__ExceedsFlashLoanCap();
     error YoloHook__NoPendingBurns();
+    error YoloHook__InvalidRehypothecationRatio();
+    error YoloHook__RehypothecationDisabled();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -416,6 +449,15 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     function setSyntheticAssetLogic(address _syntheticAssetLogic) external onlyOwner {
         if (_syntheticAssetLogic == address(0)) revert YoloHook__ZeroAddress();
         syntheticAssetLogic = _syntheticAssetLogic;
+    }
+
+    /**
+     * @notice  Set the rehypothecation logic contract address
+     * @param   _rehypothecationLogic The address of the rehypothecation logic contract
+     */
+    function setRehypothecationLogic(address _rehypothecationLogic) external onlyOwner {
+        if (_rehypothecationLogic == address(0)) revert YoloHook__ZeroAddress();
+        rehypothecationLogic = _rehypothecationLogic;
     }
 
     function createNewYoloAsset(string calldata _name, string calldata _symbol, uint8 _decimals, address _priceSource)
@@ -839,6 +881,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             cUSDC.take(poolManager, address(this), usdcUsed, true);
             cUSY.take(poolManager, address(this), usyUsed, true);
 
+            // NOW we have the USDC, so rehypothecate
+            _handleRehypothecation(usdcUsed);
+
             // Update state
             totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
             totalAnchorReserveUSY += usyUsed; // USY (18-dec)
@@ -862,6 +907,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             uint256 usdcAmount = data.usdcAmount; // USDC amount to return
             uint256 usyAmount = data.usyAmount; // USY amount to return
             uint256 liquidity = data.liquidity; // LP tokens burnt
+
+            // FIRST ensure we have enough USDC by dehypothecating if needed
+            _handleDehypothecation(usdcAmount);
 
             // Update state
             anchorPoolLPBalance[initiator] -= liquidity;
@@ -944,6 +992,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // ***********************//
     // *** HOOK FUNCTIONS *** //
     // ********************** //
+
     /**
      * @notice  Returns the permissions for this hook.
      * @dev     Enable all actions to enture future upgradability.
@@ -967,7 +1016,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         });
     }
 
-    // Backup
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
@@ -1022,9 +1070,15 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             if (usdcToUsy) {
                 totalAnchorReserveUSDC = rIn + nIn;
                 totalAnchorReserveUSY = rOut - out;
+
+                // Mark USDC for rehypothecation AFTER we receive it
+                _pendingRehypoUSDC = nIn;
             } else {
                 totalAnchorReserveUSY = rIn + nIn;
                 totalAnchorReserveUSDC = rOut - out;
+
+                // Mark USDC needed for dehypothecation
+                _pendingDehypoUSDC = out;
             }
 
             // Settlement
@@ -1116,12 +1170,157 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         BalanceDelta, // unused
         bytes calldata // unused
     ) internal override returns (bytes4, int128) {
+        // Handle pending rehypothecation
+        if (_pendingRehypoUSDC > 0) {
+            _handleRehypothecation(_pendingRehypoUSDC);
+            _pendingRehypoUSDC = 0;
+        }
+
+        // Handle pending dehypothecation
+        if (_pendingDehypoUSDC > 0) {
+            _handleDehypothecation(_pendingDehypoUSDC);
+            _pendingDehypoUSDC = 0;
+        }
+
         return (this.afterSwap.selector, int128(0));
     }
 
     // ***********************//
     // *** VIEW FUNCTIONS *** //
     // ********************** //
+
+    // **********************************//
+    // *** REHYPOTHECATION FUNCTIONS *** //
+    // ********************************* //
+
+    /**
+     * @notice  Enable or disable rehypothecation functionality
+     * @param   _enabled  Whether to enable rehypothecation
+     */
+    function setRehypothecationEnabled(bool _enabled) external onlyOwner {
+        // If disabling and we have USYC balance, convert it back to USDC
+        if (!_enabled && rehypothecationEnabled && usycBalance > 0) {
+            // Sell all USYC back to USDC
+            uint256 usdcReceived = _sellUSYC(usycBalance);
+            uint256 withdrawnAmount = usycBalance;
+            usycBalance = 0;
+
+            emit EmergencyUSYCWithdrawal(withdrawnAmount, usdcReceived);
+        }
+
+        rehypothecationEnabled = _enabled;
+        emit RehypothecationStatusUpdated(_enabled);
+    }
+
+    /**
+     * @notice  Configure rehypothecation parameters
+     * @param   _usycTeller  Address of the USYC Teller contract
+     * @param   _usyc        Address of the USYC token
+     * @param   _ratio       Maximum percentage of USDC to rehypothecate (e.g., 7500 = 75%)
+     */
+    function configureRehypothecation(address _usycTeller, address _usyc, uint256 _ratio) external onlyOwner {
+        if (_usycTeller == address(0) || _usyc == address(0)) revert YoloHook__ZeroAddress();
+        if (_ratio > PRECISION_DIVISOR) revert YoloHook__InvalidRehypothecationRatio();
+
+        usycTeller = ITeller(_usycTeller);
+        usyc = IERC20(_usyc);
+        rehypothecationRatio = _ratio;
+
+        // Approve USYC Teller to spend USDC
+        IERC20(usdc).approve(_usycTeller, type(uint256).max);
+
+        emit RehypothecationConfigured(_usycTeller, _usyc, _ratio);
+    }
+
+    /**
+     * @notice  Internal function to buy USYC and track cost basis
+     * @param   _usdcAmount  Amount of USDC to spend
+     * @return  usycOut      Amount of USYC received
+     */
+    function _buyUSYC(uint256 _usdcAmount) internal returns (uint256 usycOut) {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("buyUSYC(uint256)", _usdcAmount));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        return abi.decode(ret, (uint256));
+    }
+
+    /**
+     * @notice  Internal function to sell USYC and realize P&L
+     * @param   _usycAmount  Amount of USYC to sell
+     * @return  usdcOut      Amount of USDC received
+     */
+    function _sellUSYC(uint256 _usycAmount) internal returns (uint256 usdcOut) {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("sellUSYC(uint256)", _usycAmount));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        return abi.decode(ret, (uint256));
+    }
+
+    /**
+     * @notice  Internal function to handle rehypothecation during swaps
+     * @dev     Called in _afterSwap for anchor pool when USDC is coming in
+     * @param   _usdcAmount  Amount of USDC being added to reserves (not used due to double-counting fix)
+     */
+    function _handleRehypothecation(uint256 _usdcAmount) internal {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("handleRehypothecation(uint256)", _usdcAmount));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
+
+    /**
+     * @notice  Internal function to handle de-hypothecation when USDC is needed
+     * @dev     Called when removing liquidity or during swaps that reduce USDC reserves
+     * @param   _usdcNeeded  Amount of USDC needed
+     */
+    function _handleDehypothecation(uint256 _usdcNeeded) internal {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("handleDehypothecation(uint256)", _usdcNeeded));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
+
+    /**
+     * @notice  Manually rebalance rehypothecation to target ratio
+     * @dev     Can be called by owner to rebalance outside of normal operations
+     */
+    function rebalanceRehypothecation() external onlyOwner {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("rebalanceRehypothecation()"));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
+
+    /**
+     * @notice  Emergency function to withdraw all USYC and convert back to USDC
+     * @dev     Only callable by owner in emergency situations
+     */
+    function emergencyWithdrawUSYC() external onlyOwner {
+        (bool success, bytes memory ret) =
+            rehypothecationLogic.delegatecall(abi.encodeWithSignature("emergencyWithdrawUSYC()"));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
 
     // ***************************//
     // *** INTERNAL FUNCTIONS *** //

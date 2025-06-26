@@ -3,12 +3,14 @@ pragma solidity ^0.8.26;
 
 import {IYoloOracle} from "@yolo/contracts/interfaces/IYoloOracle.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
-import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {ITeller} from "@yolo/contracts/interfaces/ITeller.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title   YoloStorage
  * @notice  Abstract contract defining the storage layout for YoloHook and delegated logic contracts
  * @dev     DO NOT DEPLOY - This contract only defines storage layout to ensure consistency across delegatecalls
+ *          IMPORTANT: This must match YoloHook's storage layout exactly, excluding inherited storage
  */
 abstract contract YoloStorage {
     // ========================
@@ -23,6 +25,9 @@ abstract contract YoloStorage {
 
     // --- Pausable Storage ---
     bool private _paused;
+
+    // --- NOTE: poolManager from BaseHook is NOT included here ---
+    // --- It exists in YoloHook at slot 2 through inheritance ---
 
     // --- YoloHook Core Storage ---
     address public treasury;
@@ -70,6 +75,25 @@ abstract contract YoloStorage {
     // User Positions
     mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
     mapping(address => UserPositionKey[]) public userPositionKeys;
+
+    // Delegation Logic Contracts
+    address public syntheticAssetLogic;
+    address public rehypothecationLogic;
+
+    // Rehypothecation Configuration
+    ITeller public usycTeller;
+    IERC20 public usyc;
+    bool public rehypothecationEnabled;
+    uint256 public rehypothecationRatio;
+    uint256 public usycBalance;
+
+    // Storage variables for cost basis tracking
+    uint256 internal usycCostBasisUSDC;
+    uint256 internal usycQuantity;
+
+    // Storage variables for pending rehypothecation
+    uint256 internal _pendingRehypoUSDC;
+    uint256 internal _pendingDehypoUSDC;
 
     // ========================
     // DATA STRUCTURES
@@ -122,6 +146,7 @@ abstract contract YoloStorage {
     // ERRORS
     // ========================
 
+    // Synthetic Asset Errors
     error YoloHook__InsufficientAmount();
     error YoloHook__NotYoloAsset();
     error YoloHook__CollateralNotRecognized();
@@ -137,10 +162,16 @@ abstract contract YoloStorage {
     error YoloHook__Solvent();
     error YoloHook__InvalidSeizeAmount();
 
+    // Rehypothecation Errors
+    error YoloHook__InvalidRehypothecationRatio();
+    error YoloHook__RehypothecationDisabled();
+    error YoloHook__ZeroAddress();
+
     // ========================
     // EVENTS
     // ========================
 
+    // Synthetic Asset Events
     event Borrowed(
         address indexed user,
         address indexed collateral,
@@ -177,4 +208,13 @@ abstract contract YoloStorage {
         uint256 repayAmount,
         uint256 collateralSeized
     );
+
+    // Rehypothecation Events
+    event RehypothecationStatusUpdated(bool enabled);
+    event RehypothecationConfigured(address indexed teller, address indexed usyc, uint256 ratio);
+    event RehypothecationExecuted(bool isBuy, uint256 amount, uint256 received);
+    event RehypothecationRebalanced(bool isBuy, uint256 amount, uint256 received);
+    event EmergencyUSYCWithdrawal(uint256 usycAmount, uint256 usdcReceived);
+    event RehypothecationGain(uint256 profit);
+    event RehypothecationLoss(uint256 loss);
 }
