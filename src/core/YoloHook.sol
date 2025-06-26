@@ -556,12 +556,16 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
-        (bool success,) = syntheticAssetLogic.delegatecall(
+        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
             abi.encodeWithSignature(
                 "borrow(address,uint256,address,uint256)", _yoloAsset, _borrowAmount, _collateral, _collateralAmount
             )
         );
-        require(success, "Borrow delegatecall failed");
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -575,12 +579,16 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         external
         nonReentrant
     {
-        (bool success,) = syntheticAssetLogic.delegatecall(
+        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
             abi.encodeWithSignature(
                 "repay(address,address,uint256,bool)", _collateral, _yoloAsset, _repayAmount, _claimCollateral
             )
         );
-        require(success, "Repay delegatecall failed");
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -590,10 +598,14 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _amount        How much collateral to withdraw
      */
     function withdraw(address _collateral, address _yoloAsset, uint256 _amount) external nonReentrant whenNotPaused {
-        (bool success,) = syntheticAssetLogic.delegatecall(
+        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
             abi.encodeWithSignature("withdraw(address,address,uint256)", _collateral, _yoloAsset, _amount)
         );
-        require(success, "Withdraw delegatecall failed");
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -607,12 +619,16 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         external
         nonReentrant
     {
-        (bool success,) = syntheticAssetLogic.delegatecall(
+        (bool success, bytes memory ret) = syntheticAssetLogic.delegatecall(
             abi.encodeWithSignature(
                 "liquidate(address,address,address,uint256)", _user, _collateral, _yoloAsset, _repayAmount
             )
         );
-        require(success, "Liquidate delegatecall failed");
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**

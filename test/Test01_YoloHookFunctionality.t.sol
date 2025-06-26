@@ -12,6 +12,7 @@ import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
+import {SyntheticAssetLogic} from "@yolo/contracts/core/SyntheticAssetLogic.sol";
 /*---------- IMPORT LIBRARIES & TYPES ----------*/
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 /*---------- IMPORT TEST SUITES ----------*/
@@ -135,6 +136,9 @@ contract Test01_YoloHookFunctionality is
             10, // 0.1% flash loan fee
             symbolToDeployedAsset["USDC"] // USDC address
         );
+
+        SyntheticAssetLogic syntheticAssetLogic = new SyntheticAssetLogic();
+        yoloHookProxy.setSyntheticAssetLogic(address(syntheticAssetLogic));
 
         // D. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));

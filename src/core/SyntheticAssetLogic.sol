@@ -15,7 +15,7 @@ import {IYoloOracle} from "@yolo/contracts/interfaces/IYoloOracle.sol";
  */
 contract SyntheticAssetLogic is YoloStorage {
     using SafeERC20 for IERC20;
-    
+
     /**
      * @notice  Allow users to deposit collateral and mint yolo assets
      * @param   _yoloAsset          The yolo asset to mint
@@ -77,9 +77,7 @@ contract SyntheticAssetLogic is YoloStorage {
      * @param   _repayAmount        The amount to repay (0 for full repayment)
      * @param   _claimCollateral    Whether to withdraw collateral after full repayment
      */
-    function repay(address _collateral, address _yoloAsset, uint256 _repayAmount, bool _claimCollateral)
-        external
-    {
+    function repay(address _collateral, address _yoloAsset, uint256 _repayAmount, bool _claimCollateral) external {
         UserPosition storage position = positions[msg.sender][_collateral][_yoloAsset];
         if (position.borrower != msg.sender) revert YoloHook__InvalidPosition();
 
@@ -170,9 +168,7 @@ contract SyntheticAssetLogic is YoloStorage {
      * @param   _yoloAsset   The YoloAsset token address
      * @param   _repayAmount How much of the borrower's debt to cover (0 == full debt)
      */
-    function liquidate(address _user, address _collateral, address _yoloAsset, uint256 _repayAmount)
-        external
-    {
+    function liquidate(address _user, address _collateral, address _yoloAsset, uint256 _repayAmount) external {
         // Early validation - all reverts first
         CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
         if (cfg.collateral == address(0)) revert YoloHook__InvalidPair();
