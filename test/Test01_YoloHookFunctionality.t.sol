@@ -8,10 +8,6 @@ import "./base/Base03_DeployYoloAssetSettingsAndCollaterals.t.sol";
 /*---------- IMPORT CONTRACTS ----------*/
 import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTransparentUpgradeableProxy.sol";
 import {YoloHook} from "@yolo/contracts/core/YoloHook.sol";
-import {YoloHookModular} from "@yolo/contracts/core/YoloHookModular.sol";
-import {AnchorLogic} from "@yolo/contracts/core/AnchorLogic.sol";
-import {SyntheticLogic} from "@yolo/contracts/core/SyntheticLogic.sol";
-import {BorrowLogic} from "@yolo/contracts/core/BorrowLogic.sol";
 import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
@@ -45,12 +41,6 @@ contract Test01_YoloHookFunctionality is
     YoloHook public yoloHookProxy;
     YoloOracle public yoloOracle;
 
-    // Modular hook support (set to true to test modular version)
-    bool public useModularHook = true;
-    AnchorLogic public anchorLogic;
-    SyntheticLogic public syntheticLogic;
-    BorrowLogic public borrowLogic;
-
     mapping(string => address) yoloAssetToAddress;
 
     // For convenience
@@ -82,7 +72,27 @@ contract Test01_YoloHookFunctionality is
         console.log("Hook Proxy Binary Format:");
         _logAddressAsBinary(hookProxyAddress);
 
-        // B. Deploy the YoloOracle contract first
+        /// Deploy code to the hook implementation & proxy addresses
+        deployCodeTo("YoloHook.sol", abi.encode(manager), hookImplementationAddress);
+        yoloHookImplementation = YoloHook(hookImplementationAddress);
+        deployCodeTo(
+            "PublicTransparentUpgradeableProxy.sol",
+            abi.encode(hookImplementationAddress, address(this), ""),
+            hookProxyAddress
+        );
+        yoloHookProxy = YoloHook(hookProxyAddress);
+
+        assertEq(
+            PublicTransparentUpgradeableProxy(payable(address(yoloHookProxy))).implementation(),
+            hookImplementationAddress,
+            "Test01: YoloHook implementation address mismatch"
+        );
+        console.log("Hook Implementation: ", hookImplementationAddress);
+        console.log("Hook Proxy: ", hookProxyAddress);
+
+        console.log("Successfully deployed YoloHook implementation and proxy contracts.");
+
+        // B. Deploy the YoloOracle contract
 
         // Extract the deployed assets and oracles from the base contract
 
@@ -108,55 +118,6 @@ contract Test01_YoloHookFunctionality is
 
         console.log("Successfully deployed YoloOracle contract at address:", address(yoloOracle));
 
-        // C. Deploy hook implementation & proxy addresses
-        if (useModularHook) {
-            // Deploy logic contracts first
-            anchorLogic = new AnchorLogic();
-            syntheticLogic = new SyntheticLogic();
-            borrowLogic = new BorrowLogic();
-
-            deployCodeTo("YoloHookModular.sol:YoloHookModular", abi.encode(manager), hookImplementationAddress);
-            yoloHookImplementation = YoloHook(hookImplementationAddress);
-
-            // Deploy proxy with modular initialization data
-            bytes memory modularInitData = abi.encodeWithSignature(
-                "initialize(address,address,address,uint256,uint256,uint256,address,address,address,address)",
-                address(weth),
-                address(this),
-                address(yoloOracle),
-                5, // 0.05% stable swap fee
-                20, // 0.2% synthetic swap fee
-                10, // 0.1% flash loan fee
-                symbolToDeployedAsset["USDC"], // USDC address
-                address(anchorLogic),
-                address(syntheticLogic),
-                address(borrowLogic)
-            );
-
-            deployCodeTo(
-                "PublicTransparentUpgradeableProxy.sol:PublicTransparentUpgradeableProxy",
-                abi.encode(hookImplementationAddress, address(this), modularInitData),
-                hookProxyAddress
-            );
-        } else {
-            deployCodeTo("YoloHook.sol:YoloHook", abi.encode(manager), hookImplementationAddress);
-            yoloHookImplementation = YoloHook(hookImplementationAddress);
-            deployCodeTo(
-                "PublicTransparentUpgradeableProxy.sol:PublicTransparentUpgradeableProxy",
-                abi.encode(hookImplementationAddress, address(this), ""),
-                hookProxyAddress
-            );
-        }
-        yoloHookProxy = YoloHook(hookProxyAddress);
-
-        assertEq(
-            PublicTransparentUpgradeableProxy(payable(address(yoloHookProxy))).implementation(),
-            hookImplementationAddress,
-            "Test01: YoloHook implementation address mismatch"
-        );
-        console.log("Hook Implementation: ", hookImplementationAddress);
-        console.log("Hook Proxy: ", hookProxyAddress);
-
         console.log("Tester Address Is: ", address(this));
         console.log(
             "YoloHook Proxy Admin Is: ", PublicTransparentUpgradeableProxy(payable(address(yoloHookProxy))).proxyAdmin()
@@ -164,18 +125,16 @@ contract Test01_YoloHookFunctionality is
         console.log("YoloHook Implementation Owner Is: ", yoloHookImplementation.owner());
         console.log("YoloHook Proxy Owner Is: ", yoloHookProxy.owner());
 
-        // C. Initialize the YoloHook proxy contract (only for non-modular)
-        if (!useModularHook) {
-            yoloHookProxy.initialize(
-                address(weth),
-                address(this),
-                address(yoloOracle),
-                5, // 0.05% stable swap fee
-                20, // 0.2% synthetic swap fee
-                10, // 0.1% flash loan fee
-                symbolToDeployedAsset["USDC"] // USDC address
-            );
-        }
+        // C. Initialize the YoloHook proxy contract
+        yoloHookProxy.initialize(
+            address(weth),
+            address(this),
+            address(yoloOracle),
+            5, // 0.05% stable swap fee
+            20, // 0.2% synthetic swap fee
+            10, // 0.1% flash loan fee
+            symbolToDeployedAsset["USDC"] // USDC address
+        );
 
         // D. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));
