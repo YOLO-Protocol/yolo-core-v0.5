@@ -192,6 +192,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     uint256 private _pendingRehypoUSDC; // USDC to convert to USYC after swap
     uint256 private _pendingDehypoUSDC; // USDC needed from USYC after swap
 
+    /*----- Cross-Chain Bridge Configuration -----*/
+    address public registeredBridge; // Single registered bridge address
+
     // ***************//
     // *** EVENTS *** //
     // ************** //
@@ -290,6 +293,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     event RehypothecationLoss(uint256 loss);
 
+    event BridgeRegistered(address indexed bridge);
+
+    event CrossChainBurn(address indexed bridge, address indexed yoloAsset, uint256 amount, address indexed sender);
+
+    event CrossChainMint(address indexed bridge, address indexed yoloAsset, uint256 amount, address indexed receiver);
+
     // ***************//
     // *** ERRORS *** //
     // ************** //
@@ -325,6 +334,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     error YoloHook__NoPendingBurns();
     error YoloHook__InvalidRehypothecationRatio();
     error YoloHook__RehypothecationDisabled();
+    error YoloHook__NotBridge();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -570,7 +580,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     function setNewPriceSource(address _asset, address _priceSource) external onlyOwner {
         if (_priceSource == address(0)) revert YoloHook__InvalidPriceSource();
 
-        address oldPriceSource = yoloOracle.getSourceOfAsset(_asset);
+        // address oldPriceSource = yoloOracle.getSourceOfAsset(_asset);
 
         address[] memory assets = new address[](1);
         address[] memory priceSources = new address[](1);
@@ -841,6 +851,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             uint256 _actualLiquidityMinted
         ) = abi.decode(data, (address, address, uint256, uint256, uint256));
 
+        _handleRehypothecation(0);
+
         // Emit Hook Event
         if (anchorPoolToken0 == usdc) {
             emit HookModifyLiquidity(
@@ -882,7 +894,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             cUSY.take(poolManager, address(this), usyUsed, true);
 
             // NOW we have the USDC, so rehypothecate
-            _handleRehypothecation(usdcUsed);
 
             // Update state
             totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
@@ -908,9 +919,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             uint256 usyAmount = data.usyAmount; // USY amount to return
             uint256 liquidity = data.liquidity; // LP tokens burnt
 
-            // FIRST ensure we have enough USDC by dehypothecating if needed
-            _handleDehypothecation(usdcAmount);
-
             // Update state
             anchorPoolLPBalance[initiator] -= liquidity;
             anchorPoolLiquiditySupply -= liquidity;
@@ -935,6 +943,24 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         } else if (action == 2) {
             // Case C: Burn pending burnt tokens
             _burnPending();
+        } else if (action == 3) {
+            // CASE D: Pull Real USDC
+            uint256 amt = abi.decode(callbackData.data, (uint256));
+            Currency cUSDC = Currency.wrap(usdc);
+
+            // burn claim-tokens we currently hold
+            cUSDC.settle(poolManager, address(this), amt, true);
+            // receive the underlying ERC-20
+            cUSDC.take(poolManager, address(this), amt, false);
+            return abi.encode(amt);
+        } else if (action == 4) {
+            // CASE E: Push Real USDC
+            uint256 amt = abi.decode(callbackData.data, (uint256));
+            Currency cUSDC = Currency.wrap(usdc);
+
+            // hand ERC-20 back to PM and get fresh claim-tokens
+            cUSDC.settle(poolManager, address(this), amt, false);
+            return abi.encode(amt);
         } else {
             revert YoloHook__UnknownUnlockActionError();
         }
@@ -965,6 +991,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         usyAmount = (_liquidity * totalAnchorReserveUSY) / anchorPoolLiquiditySupply;
 
         if (usdcAmount < _minUSDC || usyAmount < _minUSY) revert YoloHook__InsufficientAmount();
+
+        _handleDehypothecation(usdcAmount);
 
         bytes memory data = poolManager.unlock(
             abi.encode(
@@ -1185,6 +1213,73 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         return (this.afterSwap.selector, int128(0));
     }
 
+
+    // ******************************//
+    // *** CROSS CHAIN FUNCTIONS *** //
+    // ***************************** //
+
+    /**
+     * @notice  Modifier to ensure only the registered bridge can call certain functions
+     */
+    modifier onlyBridge() {
+        if (msg.sender != registeredBridge) revert YoloHook__NotBridge();
+        _;
+    }
+
+    /**
+     * @notice  Register a bridge contract that can mint/burn YoloAssets for cross-chain transfers
+     * @param   _bridgeAddress  The address of the bridge contract to register
+     */
+    function registerBridge(address _bridgeAddress) external onlyOwner {
+        if (_bridgeAddress == address(0)) revert YoloHook__ZeroAddress();
+        
+        registeredBridge = _bridgeAddress;
+        
+        emit BridgeRegistered(_bridgeAddress);
+    }
+
+    /**
+     * @notice  Burn YoloAssets for cross-chain transfer (called by registered bridge)
+     * @param   _yoloAsset  The YoloAsset to burn
+     * @param   _amount     The amount to burn
+     * @param   _sender     The original sender of the tokens
+     */
+    function crossChainBurn(address _yoloAsset, uint256 _amount, address _sender) external onlyBridge {
+        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+        if (_amount == 0) revert YoloHook__InsufficientAmount();
+        
+        // Burn the tokens from the sender
+        IYoloSyntheticAsset(_yoloAsset).burn(_sender, _amount);
+        
+        emit CrossChainBurn(msg.sender, _yoloAsset, _amount, _sender);
+    }
+
+    /**
+     * @notice  Mint YoloAssets for cross-chain transfer (called by registered bridge)
+     * @param   _yoloAsset  The YoloAsset to mint
+     * @param   _amount     The amount to mint
+     * @param   _receiver   The receiver of the minted tokens
+     */
+    function crossChainMint(address _yoloAsset, uint256 _amount, address _receiver) external onlyBridge {
+        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+        if (_amount == 0) revert YoloHook__InsufficientAmount();
+        if (_receiver == address(0)) revert YoloHook__ZeroAddress();
+        
+        // Check if minting would exceed the cap
+        YoloAssetConfiguration storage config = yoloAssetConfigs[_yoloAsset];
+        if (config.maxMintableCap > 0) {
+            uint256 currentSupply = IERC20(_yoloAsset).totalSupply();
+            if (currentSupply + _amount > config.maxMintableCap) {
+                revert YoloHook__ExceedsYoloAssetMintCap();
+            }
+        }
+        
+        // Mint the tokens to the receiver
+        IYoloSyntheticAsset(_yoloAsset).mint(_receiver, _amount);
+        
+        emit CrossChainMint(msg.sender, _yoloAsset, _amount, _receiver);
+    }  
+
     // ***********************//
     // *** VIEW FUNCTIONS *** //
     // ********************** //
@@ -1198,19 +1293,61 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _enabled  Whether to enable rehypothecation
      */
     function setRehypothecationEnabled(bool _enabled) external onlyOwner {
-        // If disabling and we have USYC balance, convert it back to USDC
-        if (!_enabled && rehypothecationEnabled && usycBalance > 0) {
-            // Sell all USYC back to USDC
-            uint256 usdcReceived = _sellUSYC(usycBalance);
-            uint256 withdrawnAmount = usycBalance;
-            usycBalance = 0;
-
-            emit EmergencyUSYCWithdrawal(withdrawnAmount, usdcReceived);
-        }
-
+        // flip the switch & announce
         rehypothecationEnabled = _enabled;
         emit RehypothecationStatusUpdated(_enabled);
+
+        // If disabling: unwind every­thing so the anchor-pool maths stay simple
+        if (!_enabled && usycBalance > 0) {
+            _sellUSYC(usycBalance); // this sells and *already* converts the USDC to claim-tokens
+            // zero-out trackers
+            usycBalance = 0;
+            usycQuantity = 0;
+            usycCostBasisUSDC = 0;
+        }
     }
+
+    // function setRehypothecationEnabled(bool _enabled) external onlyOwner {
+    //     // // If disabling and we have USYC balance, convert it back to USDC
+    //     // if (!_enabled && rehypothecationEnabled && usycBalance > 0) {
+    //     //     // Sell all USYC back to USDC
+    //     //     uint256 usdcReceived = _sellUSYC(usycBalance);
+    //     //     uint256 withdrawnAmount = usycBalance;
+    //     //     usycBalance = 0;
+
+    //     //     emit EmergencyUSYCWithdrawal(withdrawnAmount, usdcReceived);
+    //     // }
+
+    //     // rehypothecationEnabled = _enabled;
+    //     // emit RehypothecationStatusUpdated(_enabled);
+    //     // flip the switch & announce first
+    //     // rehypothecationEnabled = _enabled;
+    //     // emit RehypothecationStatusUpdated(_enabled);
+
+    //     // // if we are turning the feature *off*: unwind every-thing
+    //     // if (!_enabled && usycBalance > 0) {
+    //     //     uint256 withdrawn = usycBalance;
+    //     //     uint256 received = _sellUSYC(withdrawn); // Sell USYC back to USDC
+    //     //     usycBalance = 0;
+    //     //     usycQuantity = 0;
+    //     //     usycCostBasisUSDC = 0;
+    //     //     emit EmergencyUSYCWithdrawal(withdrawn, received);
+    //     // }
+    //     // flip the switch & announce first
+    //     rehypothecationEnabled = _enabled;
+    //     emit RehypothecationStatusUpdated(_enabled);
+
+    //     // turning OFF → unwind all USYC into USDC so pool maths stay sane
+    //     if (!_enabled && usycBalance > 0) {
+    //         _sellUSYC(usycBalance); // converts to real USDC
+    //         // push the freshly-received USDC straight back as claim-tokens
+    //         _pushRealUSDC(totalAnchorReserveUSDC); // action-4 handles PM unlock
+    //         // clear trackers
+    //         usycBalance = 0;
+    //         usycQuantity = 0;
+    //         usycCostBasisUSDC = 0;
+    //     }
+    // }
 
     /**
      * @notice  Configure rehypothecation parameters
