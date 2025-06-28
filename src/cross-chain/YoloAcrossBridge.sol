@@ -31,7 +31,7 @@ interface ISpokePool {
     ) external payable;
 
     function getCurrentTime() external view returns (uint32);
-    
+
     function depositQuoteTimeBuffer() external view returns (uint32);
 }
 
@@ -48,31 +48,31 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     // ***************** //
     // *** CONSTANTS *** //
     // ***************** //
-    
+
     uint32 private constant DEFAULT_FILL_DEADLINE_BUFFER = 4 hours; // 4 hours in seconds
     uint32 private constant DEFAULT_EXCLUSIVITY_DEADLINE = 60; // 1 minute exclusivity
 
     // ************************* //
     // *** CONTRACT VARIABLES *** //
     // ************************* //
-    
+
     IYoloHook public immutable yoloHook;
     ISpokePool public immutable spokePool;
     uint256 public immutable currentChainId;
-    
+
     // Mapping: chainId => yoloAsset => remoteYoloAsset
     mapping(uint256 => mapping(address => address)) public crossChainAssetMapping;
-    
+
     // Mapping: chainId => bool (supported destination chains)
     mapping(uint256 => bool) public supportedChains;
-    
+
     // Array of supported chain IDs for easy iteration
     uint256[] public supportedChainsList;
 
     // ***************//
     // *** EVENTS *** //
     // ************** //
-    
+
     event CrossChainTransferInitiated(
         address indexed sender,
         address indexed recipient,
@@ -81,27 +81,19 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         uint256 destinationChainId,
         bytes32 depositId
     );
-    
+
     event CrossChainTransferReceived(
-        address indexed recipient,
-        address indexed yoloAsset,
-        uint256 amount,
-        uint256 originChainId,
-        address sender
+        address indexed recipient, address indexed yoloAsset, uint256 amount, uint256 originChainId, address sender
     );
-    
-    event AssetMappingSet(
-        uint256 indexed chainId,
-        address indexed localAsset,
-        address indexed remoteAsset
-    );
-    
+
+    event AssetMappingSet(uint256 indexed chainId, address indexed localAsset, address indexed remoteAsset);
+
     event ChainSupportUpdated(uint256 indexed chainId, bool supported);
 
     // ***************//
     // *** ERRORS *** //
     // ************** //
-    
+
     error YoloAccrossBridge__ZeroAddress();
     error YoloAccrossBridge__ZeroAmount();
     error YoloAccrossBridge__NotYoloAsset();
@@ -114,22 +106,18 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     // ********************//
     // *** CONSTRUCTOR *** //
     // ******************* //
-    
+
     /**
      * @notice  Constructor to initialize the YoloAccrossBridge
      * @param   _yoloHook    Address of the YoloHook contract
      * @param   _spokePool   Address of the Across SpokePool contract
      * @param   _owner       Owner of the bridge contract
      */
-    constructor(
-        address _yoloHook,
-        address _spokePool,
-        address _owner
-    ) Ownable(_owner) {
+    constructor(address _yoloHook, address _spokePool, address _owner) Ownable(_owner) {
         if (_yoloHook == address(0) || _spokePool == address(0)) {
             revert YoloAccrossBridge__ZeroAddress();
         }
-        
+
         yoloHook = IYoloHook(_yoloHook);
         spokePool = ISpokePool(_spokePool);
         currentChainId = block.chainid;
@@ -138,30 +126,26 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     // *********************** //
     // *** ADMIN FUNCTIONS *** //
     // *********************** //
-    
+
     /**
      * @notice  Set the cross-chain asset mapping for a specific chain
      * @param   _chainId        Destination chain ID
      * @param   _localAsset     Local YoloAsset address
      * @param   _remoteAsset    Remote YoloAsset address on destination chain
      */
-    function setAssetMapping(
-        uint256 _chainId,
-        address _localAsset,
-        address _remoteAsset
-    ) external onlyOwner {
+    function setAssetMapping(uint256 _chainId, address _localAsset, address _remoteAsset) external onlyOwner {
         if (_localAsset == address(0) || _remoteAsset == address(0)) {
             revert YoloAccrossBridge__ZeroAddress();
         }
         if (!yoloHook.isYoloAsset(_localAsset)) {
             revert YoloAccrossBridge__NotYoloAsset();
         }
-        
+
         crossChainAssetMapping[_chainId][_localAsset] = _remoteAsset;
-        
+
         emit AssetMappingSet(_chainId, _localAsset, _remoteAsset);
     }
-    
+
     /**
      * @notice  Add or remove support for a destination chain
      * @param   _chainId    Chain ID to update
@@ -169,10 +153,10 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
      */
     function setSupportedChain(uint256 _chainId, bool _supported) external onlyOwner {
         if (_chainId == currentChainId) return; // Can't bridge to same chain
-        
+
         bool currentlySupported = supportedChains[_chainId];
         supportedChains[_chainId] = _supported;
-        
+
         if (_supported && !currentlySupported) {
             // Add to supported chains list
             supportedChainsList.push(_chainId);
@@ -186,14 +170,14 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
                 }
             }
         }
-        
+
         emit ChainSupportUpdated(_chainId, _supported);
     }
 
     // ******************************//
     // *** USER FACING FUNCTIONS *** //
     // ***************************** //
-    
+
     /**
      * @notice  Bridge YoloAssets to another chain
      * @param   _yoloAsset          The YoloAsset to bridge
@@ -202,15 +186,14 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
      * @param   _recipient          Recipient address on destination chain
      * @return  depositId           The deposit ID from Across
      */
-    function crossChain(
-        address _yoloAsset,
-        uint256 _amount,
-        uint256 _destinationChainId,
-        address _recipient
-    ) external nonReentrant returns (bytes32 depositId) {
+    function crossChain(address _yoloAsset, uint256 _amount, uint256 _destinationChainId, address _recipient)
+        external
+        nonReentrant
+        returns (bytes32 depositId)
+    {
         return _crossChain(_yoloAsset, _amount, _destinationChainId, _recipient, msg.sender);
     }
-    
+
     /**
      * @notice  Bridge YoloAssets to another chain on behalf of another user
      * @param   _yoloAsset          The YoloAsset to bridge
@@ -232,7 +215,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         if (allowance < _amount) {
             revert YoloAccrossBridge__InsufficientBalance();
         }
-        
+
         return _crossChain(_yoloAsset, _amount, _destinationChainId, _recipient, _sender);
     }
 
@@ -243,7 +226,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
      */
     function handleV3AcrossMessage(
         address, // _tokenSent - not used for YoloAsset transfers
-        uint256, // _amount - not used for YoloAsset transfers  
+        uint256, // _amount - not used for YoloAsset transfers
         address, // _relayer - not used
         bytes memory _message
     ) external {
@@ -251,16 +234,11 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         if (msg.sender != address(spokePool)) {
             revert YoloAccrossBridge__UnauthorizedSender();
         }
-        
+
         // Decode the message
-        (
-            address yoloAsset,
-            uint256 amount,
-            address recipient,
-            uint256 originChainId,
-            address originalSender
-        ) = abi.decode(_message, (address, uint256, address, uint256, address));
-        
+        (address yoloAsset, uint256 amount, address recipient, uint256 originChainId, address originalSender) =
+            abi.decode(_message, (address, uint256, address, uint256, address));
+
         // Validate the message
         if (yoloAsset == address(0) || recipient == address(0)) {
             revert YoloAccrossBridge__ZeroAddress();
@@ -271,17 +249,17 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         if (!yoloHook.isYoloAsset(yoloAsset)) {
             revert YoloAccrossBridge__NotYoloAsset();
         }
-        
+
         // Mint the YoloAsset to the recipient
         yoloHook.crossChainMint(yoloAsset, amount, recipient);
-        
+
         emit CrossChainTransferReceived(recipient, yoloAsset, amount, originChainId, originalSender);
     }
 
     // ***************************//
     // *** INTERNAL FUNCTIONS *** //
     // ************************** //
-    
+
     /**
      * @notice  Internal function to handle cross-chain transfers
      * @param   _yoloAsset          The YoloAsset to bridge
@@ -311,70 +289,66 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         if (!supportedChains[_destinationChainId]) {
             revert YoloAccrossBridge__UnsupportedChain();
         }
-        
+
         // Check asset mapping exists for destination chain
         address remoteAsset = crossChainAssetMapping[_destinationChainId][_yoloAsset];
         if (remoteAsset == address(0)) {
             revert YoloAccrossBridge__NoAssetMapping();
         }
-        
+
         // Check sender has sufficient balance
         if (IERC20(_yoloAsset).balanceOf(_sender) < _amount) {
             revert YoloAccrossBridge__InsufficientBalance();
         }
-        
+
         // Burn the YoloAsset from sender
         yoloHook.crossChainBurn(_yoloAsset, _amount, _sender);
-        
+
         // Prepare message for destination chain
         bytes memory message = abi.encode(
-            remoteAsset,           // yoloAsset on destination chain
-            _amount,               // amount to mint
-            _recipient,            // recipient on destination chain
-            currentChainId,        // origin chain ID
-            _sender                // original sender
+            remoteAsset, // yoloAsset on destination chain
+            _amount, // amount to mint
+            _recipient, // recipient on destination chain
+            currentChainId, // origin chain ID
+            _sender // original sender
         );
-        
+
         // Get current time and calculate deadlines
         uint32 currentTime = spokePool.getCurrentTime();
         uint32 quoteTimestamp = currentTime;
         uint32 fillDeadline = currentTime + DEFAULT_FILL_DEADLINE_BUFFER;
         uint32 exclusivityDeadline = 0; // No exclusivity for cross-chain messaging
-        
+
         // Create deposit ID (simplified)
-        depositId = keccak256(abi.encodePacked(
-            _sender,
-            _recipient,
-            _yoloAsset,
-            _amount,
-            _destinationChainId,
-            block.timestamp,
-            block.number
-        ));
-        
+        depositId = keccak256(
+            abi.encodePacked(
+                _sender, _recipient, _yoloAsset, _amount, _destinationChainId, block.timestamp, block.number
+            )
+        );
+
         // Send cross-chain message via Across (0-amount deposit)
         spokePool.depositV3(
-            _sender,                    // depositor
-            address(this),              // recipient (this bridge on destination chain)
-            address(0),                 // inputToken (none for messages)
-            address(0),                 // outputToken (none for messages)
-            0,                          // inputAmount (0 for messages)
-            0,                          // outputAmount (0 for messages)
-            _destinationChainId,        // destinationChainId
-            address(0),                 // exclusiveRelayer (none)
-            quoteTimestamp,             // quoteTimestamp
-            fillDeadline,               // fillDeadline
-            exclusivityDeadline,        // exclusivityDeadline
-            message                     // message containing transfer data
+            _sender, // depositor
+            address(this), // recipient (this bridge on destination chain)
+            address(0), // inputToken (none for messages)
+            address(0), // outputToken (none for messages)
+            0, // inputAmount (0 for messages)
+            0, // outputAmount (0 for messages)
+            _destinationChainId, // destinationChainId
+            address(0), // exclusiveRelayer (none)
+            quoteTimestamp, // quoteTimestamp
+            fillDeadline, // fillDeadline
+            exclusivityDeadline, // exclusivityDeadline
+            message // message containing transfer data
         );
-        
+
         emit CrossChainTransferInitiated(_sender, _recipient, _yoloAsset, _amount, _destinationChainId, depositId);
     }
 
     // ***********************//
     // *** VIEW FUNCTIONS *** //
     // ********************** //
-    
+
     /**
      * @notice  Get the remote asset address for a local asset on a specific chain
      * @param   _chainId     Destination chain ID
@@ -384,7 +358,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     function getRemoteAsset(uint256 _chainId, address _localAsset) external view returns (address) {
         return crossChainAssetMapping[_chainId][_localAsset];
     }
-    
+
     /**
      * @notice  Get all supported destination chains
      * @return  Array of supported chain IDs
@@ -392,7 +366,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     function getSupportedChains() external view returns (uint256[] memory) {
         return supportedChainsList;
     }
-    
+
     /**
      * @notice  Check if a chain is supported for bridging
      * @param   _chainId  Chain ID to check
@@ -401,7 +375,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     function isChainSupported(uint256 _chainId) external view returns (bool) {
         return supportedChains[_chainId];
     }
-    
+
     /**
      * @notice  Get the current chain ID
      * @return  uint256   Current chain ID
