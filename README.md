@@ -10,13 +10,19 @@
 
 This repository contains the core smart contracts for Yolo Protocol V0.
 
-## Project Introduction
+## Project Background
 
-Yolo Protocol V0 is an extension and continued development of our Hackhathon Project: 
-[Hackathon Devfolio](https://devfolio.co/projects/yolo-protocol-univ-hook-b899):
-[Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook):
+Yolo Protocol V0 is the extension and continuity of our Hackhathon Project: 
+- [Hackathon Devfolio](https://devfolio.co/projects/yolo-protocol-univ-hook-b899):
+- [Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook):
 
-We are currently part of the [Uniswap V4 Hook Incubator - Cohort UHI5](https://atrium.academy/uniswap), where we are evolving the protocol beyond its MVP into a production-ready modular DeFi infrastructure.
+### Hackathon Winning
+- We managed to win First Prize in Base Batch #001 Hackathon's DeFi Track - [Winning Announcement](https://x.com/base/status/1930340248086831484?s=46&t=z7o3TezWDqEiMiQE-Q3QPQ)
+
+
+### Incubator Placement
+- We are currently part of the [Uniswap V4 Hook Incubator - Cohort UHI5](https://atrium.academy/uniswap), where we are evolving the protocol beyond its MVP into a <b>production-ready modular DeFi infrastructure</b>.
+- We are also currently an incubatee of [Incubase - an incubator joint ventured between Base & Hashed Emergence](https://x.com/HashedEM/status/1928437083841888411)
 
 ## What is YOLO Protocol?
 
