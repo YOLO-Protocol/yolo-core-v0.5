@@ -36,7 +36,7 @@ interface ISpokePool {
 }
 
 /**
- * @title   YoloAccrossBrridge
+ * @title   YoloAcrossBridge
  * @author  0xyolodev.eth
  * @notice  Cross-chain bridge for YoloSyntheticAssets using Across Protocol
  * @dev     Enables native cross-chain transfers of YoloAssets via Across SpokePool
@@ -69,6 +69,9 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     // Array of supported chain IDs for easy iteration
     uint256[] public supportedChainsList;
 
+    // Mapping: chainId => bridge address on that chain
+    mapping(uint256 => address) public destinationBridgeAddresses;
+
     // ***************//
     // *** EVENTS *** //
     // ************** //
@@ -90,6 +93,8 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
 
     event ChainSupportUpdated(uint256 indexed chainId, bool supported);
 
+    event DestinationBridgeAddressSet(uint256 indexed chainId, address indexed bridgeAddress);
+
     // ***************//
     // *** ERRORS *** //
     // ************** //
@@ -102,6 +107,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
     error YoloAccrossBridge__InsufficientBalance();
     error YoloAccrossBridge__InvalidMessage();
     error YoloAccrossBridge__UnauthorizedSender();
+    error YoloAccrossBridge__NoBridgeAddress();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -172,6 +178,22 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         }
 
         emit ChainSupportUpdated(_chainId, _supported);
+    }
+
+    /**
+     * @notice  Set the bridge address for a destination chain
+     * @param   _chainId        Destination chain ID
+     * @param   _bridgeAddress  Bridge contract address on destination chain
+     */
+    function setDestinationBridgeAddress(uint256 _chainId, address _bridgeAddress) external onlyOwner {
+        if (_bridgeAddress == address(0)) {
+            revert YoloAccrossBridge__ZeroAddress();
+        }
+        if (_chainId == currentChainId) return; // Can't set bridge for same chain
+
+        destinationBridgeAddresses[_chainId] = _bridgeAddress;
+
+        emit DestinationBridgeAddressSet(_chainId, _bridgeAddress);
     }
 
     // ******************************//
@@ -296,6 +318,12 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
             revert YoloAccrossBridge__NoAssetMapping();
         }
 
+        // Check destination bridge address is set
+        address destinationBridge = destinationBridgeAddresses[_destinationChainId];
+        if (destinationBridge == address(0)) {
+            revert YoloAccrossBridge__NoBridgeAddress();
+        }
+
         // Check sender has sufficient balance
         if (IERC20(_yoloAsset).balanceOf(_sender) < _amount) {
             revert YoloAccrossBridge__InsufficientBalance();
@@ -329,7 +357,7 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
         // Send cross-chain message via Across (0-amount deposit)
         spokePool.depositV3(
             _sender, // depositor
-            address(this), // recipient (this bridge on destination chain)
+            destinationBridge, // recipient (bridge on destination chain)
             address(0), // inputToken (none for messages)
             address(0), // outputToken (none for messages)
             0, // inputAmount (0 for messages)
@@ -382,5 +410,14 @@ contract YoloAccrossBridge is Ownable, ReentrancyGuard {
      */
     function getCurrentChainId() external view returns (uint256) {
         return currentChainId;
+    }
+
+    /**
+     * @notice  Get the bridge address for a destination chain
+     * @param   _chainId        Destination chain ID
+     * @return  bridgeAddress   Bridge contract address on destination chain
+     */
+    function getDestinationBridgeAddress(uint256 _chainId) external view returns (address) {
+        return destinationBridgeAddresses[_chainId];
     }
 }
