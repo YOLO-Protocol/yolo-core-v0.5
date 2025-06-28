@@ -1213,7 +1213,6 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         return (this.afterSwap.selector, int128(0));
     }
 
-
     // ******************************//
     // *** CROSS CHAIN FUNCTIONS *** //
     // ***************************** //
@@ -1232,9 +1231,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      */
     function registerBridge(address _bridgeAddress) external onlyOwner {
         if (_bridgeAddress == address(0)) revert YoloHook__ZeroAddress();
-        
+
         registeredBridge = _bridgeAddress;
-        
+
         emit BridgeRegistered(_bridgeAddress);
     }
 
@@ -1247,10 +1246,10 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     function crossChainBurn(address _yoloAsset, uint256 _amount, address _sender) external onlyBridge {
         if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
         if (_amount == 0) revert YoloHook__InsufficientAmount();
-        
+
         // Burn the tokens from the sender
         IYoloSyntheticAsset(_yoloAsset).burn(_sender, _amount);
-        
+
         emit CrossChainBurn(msg.sender, _yoloAsset, _amount, _sender);
     }
 
@@ -1264,7 +1263,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
         if (_amount == 0) revert YoloHook__InsufficientAmount();
         if (_receiver == address(0)) revert YoloHook__ZeroAddress();
-        
+
         // Check if minting would exceed the cap
         YoloAssetConfiguration storage config = yoloAssetConfigs[_yoloAsset];
         if (config.maxMintableCap > 0) {
@@ -1273,12 +1272,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 revert YoloHook__ExceedsYoloAssetMintCap();
             }
         }
-        
+
         // Mint the tokens to the receiver
         IYoloSyntheticAsset(_yoloAsset).mint(_receiver, _amount);
-        
+
         emit CrossChainMint(msg.sender, _yoloAsset, _amount, _receiver);
-    }  
+    }
 
     // ***********************//
     // *** VIEW FUNCTIONS *** //

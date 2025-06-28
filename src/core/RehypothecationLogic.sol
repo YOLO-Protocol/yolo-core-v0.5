@@ -257,7 +257,7 @@ contract RehypothecationLogic is YoloStorage {
         if (!rehypothecationEnabled) revert YoloHook__RehypothecationDisabled();
 
         uint256 R = totalAnchorReserveUSDC;
-        uint256 C = (usycBalance == 0) ? 0 : _previewUSDC(usycBalance);  // USDC-value of current USYC
+        uint256 C = (usycBalance == 0) ? 0 : _previewUSDC(usycBalance); // USDC-value of current USYC
 
         uint256 r = rehypothecationRatio;
         uint256 denom = PRECISION_DIVISOR + r;
