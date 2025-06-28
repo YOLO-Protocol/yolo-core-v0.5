@@ -39,6 +39,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     // *** CONTRACT VARIABLES *** //
     // ************************* //
 
+    IRouterClient public immutable router;
     IYoloHook public immutable yoloHook;
     uint64 public immutable currentChainSelector;
 
@@ -51,7 +52,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     uint64[] public supportedChainsList;
 
     /*----- Cross-Chain Fees -----*/
-    mapping(uint64 => uint256) public chainFees; // chainSelector => fee in native token
+    // Note: Fees are calculated dynamically by CCIP router
 
     // ***************//
     // *** EVENTS *** //
@@ -78,7 +79,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
 
     event ChainSupportUpdated(uint64 indexed chainSelector, bool supported);
 
-    event ChainFeeUpdated(uint64 indexed chainSelector, uint256 newFee);
+    // Note: Chain fees are handled dynamically by CCIP router
 
     // ***************//
     // *** ERRORS *** //
@@ -92,6 +93,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     error YoloCCIPBridge__InsufficientBalance();
     error YoloCCIPBridge__InsufficientFee();
     error YoloCCIPBridge__InvalidMessage();
+    error YoloCCIPBridge__OnlyRouter();
 
     // ********************//
     // *** CONSTRUCTOR *** //
@@ -107,10 +109,11 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
         CCIPReceiver(_router)
         OwnerIsCreator()
     {
-        if (_yoloHook == address(0)) {
+        if (_router == address(0) || _yoloHook == address(0)) {
             revert YoloCCIPBridge__ZeroAddress();
         }
 
+        router = IRouterClient(_router);
         yoloHook = IYoloHook(_yoloHook);
         currentChainSelector = _currentChainSelector;
     }
@@ -166,15 +169,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
         emit ChainSupportUpdated(_chainSelector, _supported);
     }
 
-    /**
-     * @notice  Set the fee for bridging to a specific chain
-     * @param   _chainSelector  Destination chain selector
-     * @param   _fee           Fee amount in native token
-     */
-    function setChainFee(uint64 _chainSelector, uint256 _fee) external onlyOwner {
-        chainFees[_chainSelector] = _fee;
-        emit ChainFeeUpdated(_chainSelector, _fee);
-    }
+    // Note: Chain fees are calculated dynamically by CCIP router
 
     /**
      * @notice  Withdraw collected fees from the contract
@@ -257,7 +252,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
             feeToken: address(0) // Native token
         });
 
-        fee = IRouterClient(getRouter()).getFee(_chainSelector, evm2AnyMessage);
+        fee = router.getFee(_chainSelector, evm2AnyMessage);
     }
 
     // ****************************//
@@ -270,6 +265,8 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
      * @param   message  The CCIP message containing transfer details
      */
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
+        // Router validation is handled by CCIPReceiver base contract
+        
         // Decode the message
         (address yoloAsset, uint256 amount, address recipient, uint64 sourceChainSelector, address originalSender) =
             abi.decode(message.data, (address, uint256, address, uint64, address));
@@ -355,7 +352,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
         });
 
         // Calculate required fee
-        uint256 fees = IRouterClient(getRouter()).getFee(_destinationChainSelector, evm2AnyMessage);
+        uint256 fees = router.getFee(_destinationChainSelector, evm2AnyMessage);
         
         // Check sufficient fee provided
         if (msg.value < fees) {
@@ -366,7 +363,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
         yoloHook.crossChainBurn(_yoloAsset, _amount, _sender);
 
         // Send CCIP message
-        messageId = IRouterClient(getRouter()).ccipSend{value: fees}(_destinationChainSelector, evm2AnyMessage);
+        messageId = router.ccipSend{value: fees}(_destinationChainSelector, evm2AnyMessage);
 
         emit CrossChainTransferInitiated(_sender, _recipient, _yoloAsset, _amount, _destinationChainSelector, messageId);
     }
@@ -409,6 +406,8 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     function getCurrentChainSelector() external view returns (uint64) {
         return currentChainSelector;
     }
+
+    // Note: getRouter() is inherited from CCIPReceiver
 
     // ************************//
     // *** RECEIVE FUNCTION *** //
