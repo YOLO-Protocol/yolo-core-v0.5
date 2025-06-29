@@ -158,9 +158,37 @@ forge test --gas-report
 forge analyze
 ```
 
-# F. Contract Us
+# F. Deployments
+
+## Deployed Contract Addresses
+
+### Base Sepolia (Testnet)
+- **YoloHook Proxy**: `0x81B9808a8470236462A84457ebe047eE5874bFfF`
+- **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
+- **USY (YOLO USD)**: `0x5FF62705aA2F6dEAe0F8f3a771298440124A9988`
+- **CCIP Bridge**: `0x0aCfee9DdE44B42b8E28d857a99723Ff2803954F`
+
+### Unichain Sepolia (Testnet)
+- **YoloHook Proxy**: `0x6264301947935fD20FF878306d013cab76453FfF`
+- **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
+- **USY (YOLO USD)**: `0x6c28e3bc6a659bA9B7dAD42D933ab6258696630e`
+
+### Avalanche Mainnet
+- **YoloHook Proxy**: `0x3Ea806c10F85fB809812B2422d7C4b994E1CFffF`
+- **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
+- **USY (YOLO USD)**: `0x7cf2eEB65083D18325e957927Ff93B772243ef91`
+- **CCIP Bridge**: `0x0aCfee9DdE44B42b8E28d857a99723Ff2803954F`
+
+### Ink Mainnet
+- **YoloHook Proxy**: `0x8f706950dEcBD99529A13EB3312520194221ffff`
+- **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
+- **USY (YOLO USD)**: `0xeEd999C4fBD13008A2B9c834C2079CFE77C00b27`
+
+For complete deployment details including all synthetic assets and oracles, see [deployments/deployment-addresses.md](deployments/deployment-addresses.md)
+
+# G. Contact Us
 
 - [Linktree](https://linktr.ee/yolo.protocol)
 
-# G. Resources
+# H. Resources
 - [Uniswap V4 Docs](https://docs.uniswap.org/contracts/v4/overview)
