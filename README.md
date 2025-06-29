@@ -8,21 +8,40 @@
                                                                            
 ```
 
-This repository contains the core smart contracts for Yolo Protocol V0.
+GM! Welcome to the Github repository of YOLO Protocols, the Ultimate UniswapV4 Hook for DeFi Degens!
+
+## Some personal notes - why are we building YOLO Protocol?
 
 ## Project Background
 
-Yolo Protocol V0 is the extension and continuity of our Hackhathon Project: 
-- [Hackathon Devfolio](https://devfolio.co/projects/yolo-protocol-univ-hook-b899):
-- [Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook):
+Some information about this project - Yolo Protocol Core-V0 is the extension and continuity of our previous Hackhathon Project: 
+
+- [Previous Hackathon Devfolio](https://devfolio.co/projects/yolo-protocol-univ-hook-b899)
+  
+- [Previous Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook)
 
 ### Hackathon Winning
-- We managed to win First Prize in Base Batch #001 Hackathon's DeFi Track - [Winning Announcement](https://x.com/base/status/1930340248086831484?s=46&t=z7o3TezWDqEiMiQE-Q3QPQ)
+- We won First Prize in Base Batch #001 Hackathon's DeFi Track - [Winning Announcement](https://x.com/base/status/1930340248086831484?s=46&t=z7o3TezWDqEiMiQE-Q3QPQ)
+
+### Codebase Update Since Base Batch #001 Hackathon
+- The Hackathon codebase is just early Proof-of-Concept of our idea - How to creat
+  
+- Since previous Hackathon, we have implemented varios additional features on the codebase
+  
+  - Fully updated the original CSMM(Constant Sum Market Making) Math into [Stable Swap Math](https://github.com/YOLO-Protocol/yolo-core-v0/blob/main/src/libraries/StableMathLib.sol) inspired by Solidly
+  
+  - Integrated with [Circle's Hashnote USYC Teller mechanism (yield-bearing mechanism)](https://developers.circle.com/tokenized/usyc/overview) to create native rehypothecation mechanism for the anchor pool's USDC, greatly increases the return for our LP Providers as well as create a native flywheel effect for Yolo USD (USY).
+  
+  - Tested out integration with [Chainlink's CCIP](https://github.com/YOLO-Protocol/yolo-core-v0/blob/main/src/cross-chain/YoloCCIPBridge.sol) and [Accross' Spoke Pool](https://github.com/YOLO-Protocol/yolo-core-v0/blob/main/src/cross-chain/YoloAcrossBridge.sol) to make Yolo Synthetic Assets natively omni-chain, as we hope that with this feature, our synthetic assets such as yKRW, yJPY, yEUR, yGOLD, yTSLA, yNVDA etc. will be able to gain greater adoption beyond speculation and leveraged trading.
+  
+  - We have implemented a [hybrid oracle mechanism](https://github.com/YOLO-Protocol/yolo-core-v0/blob/main/src/oracles/ChainlinkFunctionsHybridOracle.sol) - combining Chainlink's Push-based Price Feed with Chainlink Functions. Since we will be enabling leveraged trading with synthetic assets, an accurate pricing model is crucial to ensure the solvency. With he hybrid oracle model, anyone can request Chainlink Functions to execute serverless functions and push the data on-chain, and this mechanism greatly enables liquidators to spot and effectively liquidating undercollateralized positions promptly.
 
 
 ### Incubator Placement
+
 - We are currently part of the [Uniswap V4 Hook Incubator - Cohort UHI5](https://atrium.academy/uniswap), where we are evolving the protocol beyond its MVP into a <b>production-ready modular DeFi infrastructure</b>.
-- We are also currently an incubatee of [Incubase - an incubator joint ventured between Base & Hashed Emergence](https://x.com/HashedEM/status/1928437083841888411)
+  
+- We are super excited to share with you that we are accepted as an incubatee of [Incubase - an incubator joint ventured between Base & Hashed Emergence](https://x.com/HashedEM/status/1928437083841888411)
 
 ## What is YOLO Protocol?
 
