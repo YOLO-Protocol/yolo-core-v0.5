@@ -32,7 +32,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     // ***************** //
     // *** CONSTANTS *** //
     // ***************** //
-    
+
     uint256 private constant GAS_LIMIT = 200_000; // Gas limit for destination execution
 
     // ************************* //
@@ -68,11 +68,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     );
 
     event CrossChainTransferReceived(
-        address indexed recipient,
-        address indexed yoloAsset,
-        uint256 amount,
-        uint64 sourceChainSelector,
-        address sender
+        address indexed recipient, address indexed yoloAsset, uint256 amount, uint64 sourceChainSelector, address sender
     );
 
     event AssetMappingSet(uint64 indexed chainSelector, address indexed localAsset, address indexed remoteAsset);
@@ -178,12 +174,12 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
      */
     function withdrawFees(address _to, uint256 _amount) external onlyOwner {
         if (_to == address(0)) revert YoloCCIPBridge__ZeroAddress();
-        
+
         uint256 balance = address(this).balance;
         uint256 withdrawAmount = _amount == 0 ? balance : _amount;
-        
+
         if (withdrawAmount > balance) withdrawAmount = balance;
-        
+
         payable(_to).transfer(withdrawAmount);
     }
 
@@ -199,12 +195,12 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
      * @param   _recipient              Recipient address on destination chain
      * @return  messageId               The CCIP message ID
      */
-    function crossChain(
-        address _yoloAsset,
-        uint256 _amount,
-        uint64 _destinationChainSelector,
-        address _recipient
-    ) external payable nonReentrant returns (bytes32 messageId) {
+    function crossChain(address _yoloAsset, uint256 _amount, uint64 _destinationChainSelector, address _recipient)
+        external
+        payable
+        nonReentrant
+        returns (bytes32 messageId)
+    {
         return _crossChain(_yoloAsset, _amount, _destinationChainSelector, _recipient, msg.sender);
     }
 
@@ -243,7 +239,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
     function getFee(uint64 _chainSelector, address _yoloAsset, uint256 _amount) external view returns (uint256 fee) {
         // Create message for fee calculation
         bytes memory message = abi.encode(_yoloAsset, _amount, address(0), currentChainSelector, address(0));
-        
+
         Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
             receiver: abi.encode(address(this)),
             data: message,
@@ -266,7 +262,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
      */
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
         // Router validation is handled by CCIPReceiver base contract
-        
+
         // Decode the message
         (address yoloAsset, uint256 amount, address recipient, uint64 sourceChainSelector, address originalSender) =
             abi.decode(message.data, (address, uint256, address, uint64, address));
@@ -353,7 +349,7 @@ contract YoloCCIPBridge is CCIPReceiver, OwnerIsCreator, ReentrancyGuard {
 
         // Calculate required fee
         uint256 fees = router.getFee(_destinationChainSelector, evm2AnyMessage);
-        
+
         // Check sufficient fee provided
         if (msg.value < fees) {
             revert YoloCCIPBridge__InsufficientFee();

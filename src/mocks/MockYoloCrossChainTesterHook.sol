@@ -19,7 +19,6 @@ import {YoloSyntheticAsset} from "@yolo/contracts/tokenization/YoloSyntheticAsse
  *          This contract can mint/burn YoloAssets and manage bridge registration
  */
 contract MockYoloCrossChainTesterHook is Ownable {
-    
     // ************************* //
     // *** CONTRACT VARIABLES *** //
     // ************************* //
@@ -46,7 +45,7 @@ contract MockYoloCrossChainTesterHook is Ownable {
     // ***************//
     // *** ERRORS *** //
     // ************** //
-    
+
     error MockYoloHook__ZeroAddress();
     error MockYoloHook__NotYoloAsset();
     error MockYoloHook__NotBridge();

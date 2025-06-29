@@ -21,15 +21,14 @@ import {YoloCCIPBridge} from "@yolo/contracts/cross-chain/YoloCCIPBridge.sol";
  * @notice  Deploy contracts on Ethereum Sepolia
  */
 contract Script03A_DeploySepoliaCCIPTesting is Script {
-    
     // ***************** //
     // *** CONSTANTS *** //
     // ***************** //
-    
+
     /*----- Ethereum Sepolia Configuration -----*/
     uint64 constant CHAIN_SELECTOR = 16015286601757825753;
     address constant CCIP_ROUTER = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
-    
+
     /*----- Test Configuration -----*/
     uint256 constant TEST_AMOUNT = 1000 * 1e18;
     string constant ASSET_NAME = "Test Yolo USD";
@@ -39,7 +38,7 @@ contract Script03A_DeploySepoliaCCIPTesting is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
-        
+
         console.log("=== DEPLOYING ON ETHEREUM SEPOLIA ===");
         console.log("Deployer address:", deployer);
         console.log("Chain Selector:", CHAIN_SELECTOR);
@@ -47,33 +46,29 @@ contract Script03A_DeploySepoliaCCIPTesting is Script {
         console.log("");
 
         vm.startBroadcast(deployerPrivateKey);
-        
+
         // Deploy Mock Hook
         MockYoloCrossChainTesterHook hook = new MockYoloCrossChainTesterHook();
         console.log("SEPOLIA_HOOK:", address(hook));
-        
+
         // Deploy CCIP Bridge
-        YoloCCIPBridge bridge = new YoloCCIPBridge(
-            CCIP_ROUTER,
-            address(hook),
-            CHAIN_SELECTOR
-        );
+        YoloCCIPBridge bridge = new YoloCCIPBridge(CCIP_ROUTER, address(hook), CHAIN_SELECTOR);
         console.log("SEPOLIA_BRIDGE:", address(bridge));
-        
+
         // Create test asset
         address asset = hook.createNewYoloAsset(ASSET_NAME, ASSET_SYMBOL, ASSET_DECIMALS);
         console.log("SEPOLIA_ASSET:", asset);
-        
+
         // Register bridge
         hook.registerBridge(address(bridge));
         console.log("Bridge registered with Hook");
-        
+
         // Mint test tokens
         hook.mintForTesting(asset, TEST_AMOUNT, deployer);
         console.log("Test tokens minted:", TEST_AMOUNT);
-        
+
         vm.stopBroadcast();
-        
+
         console.log("");
         console.log("=== SEPOLIA DEPLOYMENT COMPLETE ===");
         console.log("Copy these addresses for next scripts:");
