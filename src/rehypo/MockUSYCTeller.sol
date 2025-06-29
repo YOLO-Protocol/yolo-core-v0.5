@@ -106,7 +106,7 @@ contract MockUSYCTeller {
             // Convert: USYC(18) -> USDC(18) using price(8)
             payout = (amount * price) / 1e8; // 18 + 8 - 8 = 18
         }
-        
+
         uint256 fee = (payout * sellFee) / 1e18;
         payout = payout - fee;
 
@@ -119,7 +119,7 @@ contract MockUSYCTeller {
     function buyPreview(uint256 amount) external view returns (uint256 payout, uint256 fee, int256 priceOut) {
         fee = (amount * buyFee) / 1e18;
         uint256 netAmount = amount - fee;
-        
+
         // Get current price with yield accrual
         uint256 currentPrice = price;
         uint256 timeElapsed = block.timestamp - lastUpdateTime;
@@ -127,7 +127,7 @@ contract MockUSYCTeller {
             uint256 yieldRate = (ANNUAL_YIELD * timeElapsed) / (365 days * 10000);
             currentPrice = currentPrice + (currentPrice * yieldRate / 1e8);
         }
-        
+
         // Calculate payout
         uint8 usdcDecimals = IERC20Metadata(address(stable)).decimals();
         if (usdcDecimals == 6) {
@@ -135,7 +135,7 @@ contract MockUSYCTeller {
         } else {
             payout = (netAmount * 1e8) / currentPrice;
         }
-        
+
         priceOut = int256(currentPrice);
     }
 
@@ -147,7 +147,7 @@ contract MockUSYCTeller {
             uint256 yieldRate = (ANNUAL_YIELD * timeElapsed) / (365 days * 10000);
             currentPrice = currentPrice + (currentPrice * yieldRate / 1e8);
         }
-        
+
         // Calculate payout
         uint8 usdcDecimals = IERC20Metadata(address(stable)).decimals();
         if (usdcDecimals == 6) {
@@ -155,7 +155,7 @@ contract MockUSYCTeller {
         } else {
             payout = (amount * currentPrice) / 1e8;
         }
-        
+
         fee = (payout * sellFee) / 1e18;
         payout = payout - fee;
         priceOut = int256(currentPrice);
