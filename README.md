@@ -28,7 +28,7 @@ Some information about this project - Yolo Protocol Core-V0 is the extension and
   
 - [Previous Hackathon Github](https://github.com/alvinyap510/hackathon-yolo-protocol-hook)
 
-## Hackathon Winning
+## Previous Hackathon Winning
 - We won First Prize in Base Batch #001 Hackathon's DeFi Track - [Winning Announcement](https://x.com/base/status/1930340248086831484?s=46&t=z7o3TezWDqEiMiQE-Q3QPQ)
 
 ## Codebase Update Since Base Batch #001 Hackathon
