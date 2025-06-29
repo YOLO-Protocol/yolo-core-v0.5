@@ -71,7 +71,7 @@ YOLO Protocol is a modular DeFi engine built on top of Uniswap V4, combining cor
   > (<b>Think about an on-chain eToro / Plus500 / IG.com, where you can execute on-chain 20x leverage by collateralizing USY, and being liquidated promptly</b>)
 
 
-# Project Architecture
+# D. Project Architecture
 
 An overview of the entire project architecture of YOLO Protocl V0 is available over here:
 - [YOLO Architecture](https://excalidraw.com/#json=U5HE_AstJCEVqrD-s6c01,_S1fhWnuP2oIuqs2w54UPA)
@@ -107,7 +107,7 @@ An overview of the entire project architecture of YOLO Protocl V0 is available o
 - `tokenization/` - All ERC20 tokens used in the protocol. In future may add LP Token to represent anchor pool positions
 - `mocks/` - Stores all mock contracts
 
-# How to run
+# E. How to run
 
 ## 1. Make sure you have git, foundry and pnpm installed
 
@@ -158,9 +158,9 @@ forge test --gas-report
 forge analyze
 ```
 
-## Contract Us
+# F. Contract Us
 
 - [Linktree](https://linktr.ee/yolo.protocol)
 
-## Resources
+# G. Resources
 - [Uniswap V4 Docs](https://docs.uniswap.org/contracts/v4/overview)
