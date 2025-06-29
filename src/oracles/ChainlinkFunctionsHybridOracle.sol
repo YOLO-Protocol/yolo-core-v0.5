@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 import {FunctionsClient} from "@chainlink/contracts/src/v0.8/functions/v1_0_0/FunctionsClient.sol";
 import {ConfirmedOwner} from "@chainlink/contracts/src/v0.8/shared/access/ConfirmedOwner.sol";
 import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/v1_0_0/libraries/FunctionsRequest.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {IDecimalAggregator} from "@chainlink/contracts/src/v0.8/data-feeds/interfaces/IDecimalAggregator.sol";
 import "../interfaces/IPriceOracle.sol";
 
 /**
@@ -28,7 +28,7 @@ contract ChainlinkFunctionsHybridOracle is FunctionsClient, ConfirmedOwner, IPri
     string public apiSource;
 
     // Traditional Chainlink Price Feed
-    AggregatorV3Interface public immutable priceFeed;
+    IDecimalAggregator public immutable priceFeed;
 
     // Hybrid oracle state
     int256 public functionsLatestAnswer;
@@ -81,17 +81,16 @@ contract ChainlinkFunctionsHybridOracle is FunctionsClient, ConfirmedOwner, IPri
         uint64 _subscriptionId,
         uint32 _gasLimit
     ) FunctionsClient(_router) ConfirmedOwner(msg.sender) {
-        priceFeed = AggregatorV3Interface(_priceFeed);
+        priceFeed = IDecimalAggregator(_priceFeed);
         apiSource = _apiSource;
         donId = _donId;
         subscriptionId = _subscriptionId;
         gasLimit = _gasLimit;
 
-        // Initialize Functions data with current price feed data
-        (, int256 price,, uint256 timestamp,) = priceFeed.latestRoundData();
-        functionsLatestAnswer = price;
-        functionsLatestTimestamp = timestamp;
-        functionsLatestRound = 1;
+        // Initialize Functions data with fallback values (0 timestamp means never called)
+        functionsLatestAnswer = 0;
+        functionsLatestTimestamp = 0;
+        functionsLatestRound = 0;
     }
 
     // **********************//
@@ -129,8 +128,8 @@ contract ChainlinkFunctionsHybridOracle is FunctionsClient, ConfirmedOwner, IPri
 
         (, int256 feedPrice,, uint256 feedTimestamp,) = priceFeed.latestRoundData();
 
-        // Return the price from the most recent timestamp
-        if (functionsLatestTimestamp > feedTimestamp && functionsEnabled) {
+        // Return the price from the most recent timestamp, but only if Functions has valid data
+        if (functionsLatestTimestamp > feedTimestamp && functionsEnabled && functionsLatestAnswer != 0) {
             return functionsLatestAnswer;
         } else {
             return feedPrice;
@@ -149,8 +148,8 @@ contract ChainlinkFunctionsHybridOracle is FunctionsClient, ConfirmedOwner, IPri
 
         (,,, uint256 feedTimestamp,) = priceFeed.latestRoundData();
 
-        // Return the most recent timestamp
-        if (functionsLatestTimestamp > feedTimestamp && functionsEnabled) {
+        // Return the most recent timestamp, but only if Functions has valid data
+        if (functionsLatestTimestamp > feedTimestamp && functionsEnabled && functionsLatestAnswer != 0) {
             return functionsLatestTimestamp;
         } else {
             return feedTimestamp;
@@ -297,7 +296,7 @@ contract ChainlinkFunctionsHybridOracle is FunctionsClient, ConfirmedOwner, IPri
         }
 
         (,,, uint256 feedTimestamp,) = priceFeed.latestRoundData();
-        return functionsLatestTimestamp > feedTimestamp;
+        return functionsLatestTimestamp > feedTimestamp && functionsLatestAnswer != 0;
     }
 
     /**
