@@ -162,29 +162,64 @@ forge analyze
 
 ## Deployed Contract Addresses
 
-### Base Sepolia (Testnet)
+### Base Sepolia (Testnet) - Chain ID: 84532
+#### Core Contracts
 - **YoloHook Proxy**: `0x81B9808a8470236462A84457ebe047eE5874bFfF`
 - **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
-- **USY (YOLO USD)**: `0x5FF62705aA2F6dEAe0F8f3a771298440124A9988`
 - **CCIP Bridge**: `0x0aCfee9DdE44B42b8E28d857a99723Ff2803954F`
 
-### Unichain Sepolia (Testnet)
+#### Tokens & Synthetic Assets
+- **USY (YOLO USD)**: `0x5FF62705aA2F6dEAe0F8f3a771298440124A9988`
+- **yJPY**: `0x67Bb3cc52448866CD7743efF45823f30d344b1D6`
+- **yKRW**: `0x0dbe9B2A4A428d514e6D45817Ec05E5738b89530`
+- **yXAU (Gold)**: `0x1091392b50De97065c829d749cad8B6e2f129dc3`
+- **yNVDA**: `0xaf1034de923559E1AF90B67ac9c4f84A4EcEff1a`
+- **yTSLA**: `0xd74688447440407e926A98e9311Bde7190a7B437`
+
+### Unichain Sepolia (Testnet) - Chain ID: 1301
+#### Core Contracts
 - **YoloHook Proxy**: `0x6264301947935fD20FF878306d013cab76453FfF`
 - **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
-- **USY (YOLO USD)**: `0x6c28e3bc6a659bA9B7dAD42D933ab6258696630e`
 
-### Avalanche Mainnet
+#### Tokens & Synthetic Assets
+- **USY (YOLO USD)**: `0x6c28e3bc6a659bA9B7dAD42D933ab6258696630e`
+- **yJPY**: `0xD63F84Aa50e44e9BB40BDbDe101a960bE2B81f1f`
+- **yKRW**: `0x9F182c46d7a354a3cBDF950c6FD8936D0aCa9404`
+- **yXAU (Gold)**: `0x01a3efbCC11637179e3fDeED13940a6cDbDc7ae0`
+- **yNVDA**: `0xD00B82A09ce56Db8924f44AdE6B4b0eac42303d3`
+- **yTSLA**: `0x325cF5ae33fd75537CAd99c5177C20b04697f0B2`
+
+### Avalanche Mainnet - Chain ID: 43114
+#### Core Contracts
 - **YoloHook Proxy**: `0x3Ea806c10F85fB809812B2422d7C4b994E1CFffF`
 - **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
-- **USY (YOLO USD)**: `0x7cf2eEB65083D18325e957927Ff93B772243ef91`
 - **CCIP Bridge**: `0x0aCfee9DdE44B42b8E28d857a99723Ff2803954F`
 
-### Ink Mainnet
+#### Tokens & Synthetic Assets
+- **USY (YOLO USD)**: `0x7cf2eEB65083D18325e957927Ff93B772243ef91`
+- **yJPY**: `0x6Cf1c00c0fE85e63bf8068f77a72a8e264ef8F09`
+- **yKRW**: `0xFa0337dB79F1a02Ce1C438c90D091749B95181Dd`
+- **yXAU (Gold)**: `0xD38A68510CB16da21455304905f2C1Ef4C0DC2B6`
+- **yNVDA**: `0xe6F11C405Eed9a1073e93C4031b81b5389E95F4B`
+- **yTSLA**: `0x56cC676F58e3fd7e8b1E5E9195E35Bbf7cAda6d5`
+
+### Ink Mainnet - Chain ID: 57073
+#### Core Contracts
 - **YoloHook Proxy**: `0x8f706950dEcBD99529A13EB3312520194221ffff`
 - **YoloOracle**: `0xF5e1F3C13150dCcD88F96791fd36D79c46F22088`
-- **USY (YOLO USD)**: `0xeEd999C4fBD13008A2B9c834C2079CFE77C00b27`
 
-For complete deployment details including all synthetic assets and oracles, see [deployments/deployment-addresses.md](deployments/deployment-addresses.md)
+#### Tokens & Synthetic Assets
+- **USY (YOLO USD)**: `0xeEd999C4fBD13008A2B9c834C2079CFE77C00b27`
+- **yJPY**: `0x9127BBec2fFF1a18D5adA212c84F312140F84A98`
+- **yKRW**: `0xD4Bea6dA0CF6e6cACA9B1697A864E9e50c5fC2f0`
+- **yXAU (Gold)**: `0x49BfAF9EA23b633338F80a7827702D35F13113FF`
+- **yNVDA**: `0xfA16507ED4A9F6967aE1E92623CcAe186f573601`
+- **yTSLA**: `0xefB634fD9d328B8D9cfA8Fe2354c8736Be6F91A0`
+
+### Cross-Chain Infrastructure
+CCIP bridges deployed on Base Sepolia and Avalanche Mainnet enable seamless cross-chain transfers of all YOLO synthetic assets (USY, yJPY, yKRW, yXAU, yNVDA, yTSLA) between supported chains.
+
+For complete deployment details including all collateral tokens, oracles, and implementation addresses, see [deployments/deployment-addresses.md](deployments/deployment-addresses.md)
 
 # G. Contact Us
 
