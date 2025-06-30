@@ -37,7 +37,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *          well as functioning as a UniswapV4 hook to store and manages the all of the swap logics of
  *          Yolo assets.
  * @dev     This is the V0 version of the hook, further built based on the hackathon project:
- *          https://devfolio.co/projects/yolo-protocol-univ-hook-b899
+ *          https://devfolio.co/projects/yolo-protocol-06fe
  *
  */
 contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
