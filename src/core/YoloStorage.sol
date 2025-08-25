@@ -6,6 +6,8 @@ import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsse
 import {ITeller} from "@yolo/contracts/interfaces/ITeller.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {IStakedYoloUSD} from "../interfaces/IStakedYoloUSD.sol";
+
 /**
  * @title   YoloStorage
  * @notice  Abstract contract defining the storage layout for YoloHook and delegated logic contracts
@@ -45,8 +47,9 @@ abstract contract YoloStorage {
     address public anchorPoolToken0;
 
     mapping(bytes32 => bool) public isAnchorPool;
-    uint256 public anchorPoolLiquiditySupply;
-    mapping(address => uint256) public anchorPoolLPBalance;
+
+    // NEW: sUSY Receipt Token Integration
+    IStakedYoloUSD public sUSY;
 
     // Synthetic Pools
     mapping(bytes32 => bool) public isSyntheticPool;
@@ -116,6 +119,12 @@ abstract contract YoloStorage {
         uint256 interestRate;
         uint256 ltv;
         uint256 liquidationPenalty;
+        // NEW: Global liquidity index tracking (27 decimal precision)
+        uint256 liquidityIndexRay; // Current cumulative index
+        uint256 lastUpdateTimestamp; // Last time index was updated
+        // NEW: Expiration features
+        bool isExpirable; // Whether positions in this pair expire
+        uint256 expirePeriod; // Duration in seconds (e.g., 365 days, 6 months)
     }
 
     struct UserPosition {
@@ -123,10 +132,14 @@ abstract contract YoloStorage {
         address collateral;
         uint256 collateralSuppliedAmount;
         address yoloAsset;
-        uint256 yoloAssetMinted;
+        // UPDATED: Clean interest accounting for compound interest
+        uint256 normalizedDebtRay; // Normalized total debt (includes principal + interest)
+        uint256 normalizedPrincipalRay; // Normalized principal only (for interest calculation)
+        uint256 userLiquidityIndexRay; // User's index when last updated
         uint256 lastUpdatedTimeStamp;
-        uint256 storedInterestRate;
-        uint256 accruedInterest;
+        uint256 storedInterestRate; // User's locked rate until renewal
+        // NEW: Expiration tracking
+        uint256 expiryTimestamp; // When position expires (0 if non-expirable)
     }
 
     struct UserPositionKey {
@@ -141,6 +154,14 @@ abstract contract YoloStorage {
     uint256 public constant PRECISION_DIVISOR = 10000;
     uint256 internal constant YEAR = 365 days;
     uint256 internal constant MINIMUM_LIQUIDITY = 1000;
+
+    // NEW: Constants for compound interest calculations
+    uint256 public constant RAY = 1e27; // Aave's 27 decimal precision
+    uint256 public constant SECONDS_PER_YEAR = 365 days;
+    
+    // Security constants
+    uint256 internal constant DUST_THRESHOLD = 1e15; // 0.001 units (more meaningful than 1 wei)
+    uint256 internal constant MINIMUM_BORROW_AMOUNT = 1e16; // 0.01 units minimum borrow
 
     // ========================
     // ERRORS
@@ -161,6 +182,10 @@ abstract contract YoloStorage {
     error YoloHook__RepayExceedsDebt();
     error YoloHook__Solvent();
     error YoloHook__InvalidSeizeAmount();
+
+    // NEW: Expiration errors
+    error YoloHook__PositionNotExpirable();
+    error YoloHook__PositionExpired();
 
     // Rehypothecation Errors
     error YoloHook__InvalidRehypothecationRatio();
@@ -206,8 +231,24 @@ abstract contract YoloStorage {
         address indexed collateral,
         address indexed yoloAsset,
         uint256 repayAmount,
-        uint256 collateralSeized
+        uint256 collateralSeized,
+        bool isExpiredLiquidation
     );
+
+    // NEW: Expiration events
+    event ExpirationConfigUpdated(
+        address indexed collateral, address indexed yoloAsset, bool isExpirable, uint256 expirePeriod
+    );
+    event PositionRenewed(
+        address indexed user,
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 newExpiryTime,
+        uint256 feesPaid
+    );
+
+    // NEW: sUSY events
+    event sUSYDeployed(address indexed sUSYAddress);
 
     // Rehypothecation Events
     event RehypothecationStatusUpdated(bool enabled);
