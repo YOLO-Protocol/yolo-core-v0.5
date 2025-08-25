@@ -85,8 +85,10 @@ contract SyntheticAssetLogic is YoloStorage {
             }
         } else {
             // EXISTING POSITION - bring to current state (round UP for user obligations)
-            uint256 currentDebt = divUp(position.normalizedDebtRay * pairConfig.liquidityIndexRay, position.userLiquidityIndexRay);
-            uint256 currentPrincipal = (position.normalizedPrincipalRay * position.userLiquidityIndexRay) / position.userLiquidityIndexRay;
+            uint256 currentDebt =
+                divUp(position.normalizedDebtRay * pairConfig.liquidityIndexRay, position.userLiquidityIndexRay);
+            uint256 currentPrincipal =
+                (position.normalizedPrincipalRay * position.userLiquidityIndexRay) / position.userLiquidityIndexRay;
 
             // Add new borrow to both principal and debt
             uint256 newNormalizedPrincipal = (_borrowAmount * RAY) / position.userLiquidityIndexRay;
@@ -219,7 +221,10 @@ contract SyntheticAssetLogic is YoloStorage {
         IERC20(_collateral).safeTransfer(msg.sender, _amount);
 
         // Clean up empty positions (treat tiny normalized values as cleared)
-        if (newCollateralAmount == 0 && pos.normalizedDebtRay <= DUST_THRESHOLD && pos.normalizedPrincipalRay <= DUST_THRESHOLD) {
+        if (
+            newCollateralAmount == 0 && pos.normalizedDebtRay <= DUST_THRESHOLD
+                && pos.normalizedPrincipalRay <= DUST_THRESHOLD
+        ) {
             _removeUserPositionKey(msg.sender, _collateral, _yoloAsset);
             delete positions[msg.sender][_collateral][_yoloAsset];
         }
@@ -292,7 +297,8 @@ contract SyntheticAssetLogic is YoloStorage {
         uint256 actualDebt
     ) private returns (uint256 interestPaid, uint256 principalPaid) {
         // Calculate current principal using the LATEST global index (round DOWN to favor protocol)
-        uint256 currentPrincipal = (position.normalizedPrincipalRay * pairConfig.liquidityIndexRay) / position.userLiquidityIndexRay;
+        uint256 currentPrincipal =
+            (position.normalizedPrincipalRay * pairConfig.liquidityIndexRay) / position.userLiquidityIndexRay;
         uint256 interestAccrued = actualDebt - currentPrincipal;
 
         // Split repayment between interest and principal
