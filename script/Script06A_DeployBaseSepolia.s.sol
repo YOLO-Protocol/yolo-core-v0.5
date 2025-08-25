@@ -31,16 +31,12 @@ import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
  * @author  0xyolodev.eth
  * @dev     Deploy YOLO Protocol on Base Sepolia testnet
  */
-contract Script06A_DeployBaseSepolia is
-    Script,
-    Config01_OraclesAndAssets,
-    Config02_AssetAndCollateralInitialization
-{
+contract Script06A_DeployBaseSepolia is Script, Config01_OraclesAndAssets, Config02_AssetAndCollateralInitialization {
     // Network specific constants
     string constant NETWORK_NAME = "base-sepolia";
     IPoolManager constant POOL_MANAGER = IPoolManager(0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408);
     address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
-    
+
     // Core Protocol Contracts
     IWETH public weth;
     YoloHook public yoloHookImplementation;
@@ -334,7 +330,7 @@ contract Script06A_DeployBaseSepolia is
         // Add liquidity to anchor pool
         IERC20Metadata(usy).approve(address(yoloHookProxy), type(uint256).max);
         IERC20Metadata(usdc).approve(address(yoloHookProxy), type(uint256).max);
-        
+
         uint256 usdcAmount = IERC20Metadata(usdc).decimals() == 18 ? 1_000_000e18 : 1_000_000e6;
         yoloHookProxy.addLiquidity(usdcAmount, 1_000_000e18, 0, deployer);
 
@@ -349,26 +345,64 @@ contract Script06A_DeployBaseSepolia is
         // Create deployment log
         string memory deploymentInfo = string.concat(
             "{\n",
-            '  "network": "', NETWORK_NAME, '",\n',
-            '  "chainId": "', vm.toString(block.chainid), '",\n',
-            '  "timestamp": "', vm.toString(block.timestamp), '",\n',
-            '  "deployer": "', vm.toString(vm.addr(vm.envUint("PRIVATE_KEY"))), '",\n',
-            '  "poolManager": "', vm.toString(address(POOL_MANAGER)), '",\n',
+            '  "network": "',
+            NETWORK_NAME,
+            '",\n',
+            '  "chainId": "',
+            vm.toString(block.chainid),
+            '",\n',
+            '  "timestamp": "',
+            vm.toString(block.timestamp),
+            '",\n',
+            '  "deployer": "',
+            vm.toString(vm.addr(vm.envUint("PRIVATE_KEY"))),
+            '",\n',
+            '  "poolManager": "',
+            vm.toString(address(POOL_MANAGER)),
+            '",\n',
             '  "contracts": {\n',
-            '    "YoloHookImplementation": "', vm.toString(address(yoloHookImplementation)), '",\n',
-            '    "YoloHookProxy": "', vm.toString(address(yoloHookProxy)), '",\n',
-            '    "YoloOracle": "', vm.toString(address(yoloOracle)), '",\n',
-            '    "SyntheticAssetLogic": "', vm.toString(address(syntheticAssetLogic)), '",\n',
-            '    "USDC": "', vm.toString(usdc), '",\n',
-            '    "USY": "', vm.toString(usy), '",\n',
-            '    "WETH": "', vm.toString(address(weth)), '",\n',
-            '    "WBTC": "', vm.toString(wbtcAsset), '",\n',
-            '    "PT-sUSDe": "', vm.toString(ptUsdeAsset), '",\n',
-            '    "yJPY": "', vm.toString(yJpyAsset), '",\n',
-            '    "yKRW": "', vm.toString(yKrwAsset), '",\n',
-            '    "yXAU": "', vm.toString(yGoldAsset), '",\n',
-            '    "yNVDA": "', vm.toString(yNvdaAsset), '",\n',
-            '    "yTSLA": "', vm.toString(yTslaAsset), '"\n',
+            '    "YoloHookImplementation": "',
+            vm.toString(address(yoloHookImplementation)),
+            '",\n',
+            '    "YoloHookProxy": "',
+            vm.toString(address(yoloHookProxy)),
+            '",\n',
+            '    "YoloOracle": "',
+            vm.toString(address(yoloOracle)),
+            '",\n',
+            '    "SyntheticAssetLogic": "',
+            vm.toString(address(syntheticAssetLogic)),
+            '",\n',
+            '    "USDC": "',
+            vm.toString(usdc),
+            '",\n',
+            '    "USY": "',
+            vm.toString(usy),
+            '",\n',
+            '    "WETH": "',
+            vm.toString(address(weth)),
+            '",\n',
+            '    "WBTC": "',
+            vm.toString(wbtcAsset),
+            '",\n',
+            '    "PT-sUSDe": "',
+            vm.toString(ptUsdeAsset),
+            '",\n',
+            '    "yJPY": "',
+            vm.toString(yJpyAsset),
+            '",\n',
+            '    "yKRW": "',
+            vm.toString(yKrwAsset),
+            '",\n',
+            '    "yXAU": "',
+            vm.toString(yGoldAsset),
+            '",\n',
+            '    "yNVDA": "',
+            vm.toString(yNvdaAsset),
+            '",\n',
+            '    "yTSLA": "',
+            vm.toString(yTslaAsset),
+            '"\n',
             "  },\n",
             '  "configuration": {\n',
             '    "stableSwapFee": "0.05%",\n',
@@ -377,7 +411,7 @@ contract Script06A_DeployBaseSepolia is
             '    "collateralLTV": {\n',
             '      "WBTC": "80%",\n',
             '      "PT-sUSDe": "70%"\n',
-            '    },\n',
+            "    },\n",
             '    "interestRate": "5%",\n',
             '    "liquidationPenalty": "5%"\n',
             "  }\n",
@@ -387,7 +421,7 @@ contract Script06A_DeployBaseSepolia is
         // Create logs directory if it doesn't exist
         // vm.createDir("logs", true);
         // vm.createDir("logs/deployments", true);
-        
+
         // vm.writeFile(DEPLOYMENT_LOG, deploymentInfo);
 
         console.log("Core Contracts:");

@@ -8,6 +8,8 @@ import "forge-std/Script.sol";
 import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTransparentUpgradeableProxy.sol";
 import {YoloHook} from "@yolo/contracts/core/YoloHook.sol";
 import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
+import {SyntheticAssetLogic} from "@yolo/contracts/core/SyntheticAssetLogic.sol";
+import {StakedYoloUSD} from "@yolo/contracts/tokenization/StakedYoloUSD.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
@@ -31,8 +33,9 @@ import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 /**
  * @title   Script01_DeployTestnet
  * @author  0xyolodev.eth
- * @dev     This contract is meant to quicky deploy the entire suite of contracts
- *          in a testnet/mainnet environment for interactions.
+ * @dev     This contract deploys the entire YOLO Protocol V0.5 suite for fresh deployment.
+ *          Features: compound interest, expirable positions, sUSY receipt tokens.
+ *          NO MIGRATION - fresh deployment only.
  */
 contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_AssetAndCollateralInitialization {
     IWETH public weth;
@@ -44,6 +47,8 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
     YoloHook public yoloHookImplementation;
     YoloHook public yoloHookProxy;
     YoloOracle public yoloOracle;
+    SyntheticAssetLogic public syntheticAssetLogic;
+    StakedYoloUSD public sUSY;
 
     mapping(string => address) yoloAssetToAddress;
 
@@ -195,6 +200,10 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         // E-2/ Deploy the YoloOracle contract
         yoloOracle = new YoloOracle(assets, oracles);
         _logContractAddress("YoloOracle: ", address(yoloOracle));
+
+        // E-3. Deploy SyntheticAssetLogic delegate contract
+        syntheticAssetLogic = new SyntheticAssetLogic();
+        _logContractAddress("SyntheticAssetLogic: ", address(syntheticAssetLogic));
         console.log("YoloHook Implementation Owner Is: ", yoloHookImplementation.owner());
         console.log("YoloHook Proxy Before Initializa Owner Is: ", yoloHookProxy.owner());
 
@@ -210,7 +219,17 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         );
         console.log("YoloHook Proxy Owner After Initialize Is: ", yoloHookProxy.owner());
 
+        // F-2. Set SyntheticAssetLogic delegate contract
+        yoloHookProxy.setSyntheticAssetLogic(address(syntheticAssetLogic));
+        console.log("SyntheticAssetLogic set on YoloHook");
+
         usy = address(yoloHookProxy.anchor());
+
+        // F-3. Deploy and set sUSY token
+        sUSY = new StakedYoloUSD(address(yoloHookProxy));
+        _logContractAddress("StakedYoloUSD (sUSY): ", address(sUSY));
+        yoloHookProxy.setSUSYToken(address(sUSY));
+        console.log("sUSY token deployed and set on YoloHook");
 
         // G. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));
@@ -284,6 +303,18 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
 
         console.log("Successfully Setup Pair Configurations");
 
+        // I-2. Configure expiration for yield-bearing collaterals (e.g., PT-sUSDe)
+        // Make PT-sUSDe positions expirable with 6 month expiry
+        for (uint256 j = 0; j < yoloAssets.length; j++) {
+            yoloHookProxy.setExpirationConfig(
+                ptUsdeAsset, // PT-sUSDe as expirable collateral
+                yoloAssets[j], // All yolo assets
+                true, // isExpirable = true
+                180 days // 6 months expiry period
+            );
+        }
+        console.log("Successfully Setup Expiration Configurations for PT-sUSDe");
+
         // I. Mint Sufficient USY for further use
         // Deplosit 100 WBTC and mint 1_000_000 USY
         IERC20Metadata(wbtcAsset).approve(address(yoloHookProxy), type(uint256).max);
@@ -291,7 +322,7 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         yoloHookProxy.borrow(address(yoloHookProxy.anchor()), 1_500_000e18, wbtcAsset, 100e18);
         console.log("USY Balance of Deployer: ", IERC20Metadata(address(yoloHookProxy.anchor())).balanceOf(deployer));
 
-        // J. Add Liquidity to Anchor Pool
+        // K. Add Liquidity to Anchor Pool (this will mint sUSY tokens)
         usy = address(yoloHookProxy.anchor());
         address usdc = symbolToDeployedAsset["USDC"];
 
@@ -300,6 +331,8 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
         yoloHookProxy.addLiquidity(1_000_000e18, 1_000_000e18, 0, deployer);
 
         console.log("Successfully Added Liquidity on Anchor Pool!");
+        console.log("sUSY Balance of Deployer: ", sUSY.balanceOf(deployer));
+        console.log("sUSY Exchange Rate: ", sUSY.getExchangeRate());
     }
     // ********************************* //
     // *** INTERNAL HELPER FUNCTIONS *** //

@@ -50,11 +50,7 @@ contract Script06E_DeployBaseSepaliaCCIPBridge is Script {
         vm.startBroadcast(deployerKey);
 
         // Deploy CCIP Bridge
-        YoloCCIPBridge bridge = new YoloCCIPBridge(
-            BASE_SEPOLIA_ROUTER,
-            YOLO_HOOK_PROXY,
-            BASE_SEPOLIA_CHAIN_SELECTOR
-        );
+        YoloCCIPBridge bridge = new YoloCCIPBridge(BASE_SEPOLIA_ROUTER, YOLO_HOOK_PROXY, BASE_SEPOLIA_CHAIN_SELECTOR);
 
         console.log("CCIP Bridge deployed at:", address(bridge));
 

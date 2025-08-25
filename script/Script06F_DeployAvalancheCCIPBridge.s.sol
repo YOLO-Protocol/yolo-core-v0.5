@@ -50,11 +50,8 @@ contract Script06F_DeployAvalancheCCIPBridge is Script {
         vm.startBroadcast(deployerKey);
 
         // Deploy CCIP Bridge
-        YoloCCIPBridge bridge = new YoloCCIPBridge(
-            AVALANCHE_MAINNET_ROUTER,
-            YOLO_HOOK_PROXY,
-            AVALANCHE_MAINNET_CHAIN_SELECTOR
-        );
+        YoloCCIPBridge bridge =
+            new YoloCCIPBridge(AVALANCHE_MAINNET_ROUTER, YOLO_HOOK_PROXY, AVALANCHE_MAINNET_CHAIN_SELECTOR);
 
         console.log("CCIP Bridge deployed at:", address(bridge));
 
