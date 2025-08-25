@@ -125,6 +125,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     // Additional storage (not in YoloStorage)
     address public registeredBridge;
 
+    // NEW: Add missing logic contract addresses
+    address public anchorPoolLogic;
+    address public viewLogic;
+    address public adminLogic;
+    address public utilityLogic;
+
     // ***************** //
     // *** DATATYPES *** //
     // ***************** //
@@ -491,17 +497,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     }
 
     function setFee(uint256 _newFee, uint8 _feeType) external onlyOwner {
-        if (_feeType == 0) {
-            emit UpdateStableSwapFee(_newFee, stableSwapFee);
-            stableSwapFee = _newFee;
-        }
-        if (_feeType == 1) {
-            emit UpdateSyntheticSwapFee(_newFee, syntheticSwapFee);
-            syntheticSwapFee = _newFee;
-        }
-        if (_feeType == 2) {
-            emit UpdateFlashLoanFee(_newFee, flashLoanFee);
-            flashLoanFee = _newFee;
+        (bool success, bytes memory ret) =
+            adminLogic.delegatecall(abi.encodeWithSignature("setFee(uint256,uint8)", _newFee, _feeType));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
         }
     }
 
@@ -523,69 +524,84 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         rehypothecationLogic = _rehypothecationLogic;
     }
 
+    /**
+     * @notice  Set the anchor pool logic contract address
+     * @param   _anchorPoolLogic The address of the anchor pool logic contract
+     */
+    function setAnchorPoolLogic(address _anchorPoolLogic) external onlyOwner {
+        if (_anchorPoolLogic == address(0)) revert YoloHook__ZeroAddress();
+        anchorPoolLogic = _anchorPoolLogic;
+    }
+
+    /**
+     * @notice  Set the view logic contract address
+     * @param   _viewLogic The address of the view logic contract
+     */
+    function setViewLogic(address _viewLogic) external onlyOwner {
+        if (_viewLogic == address(0)) revert YoloHook__ZeroAddress();
+        viewLogic = _viewLogic;
+    }
+
+    /**
+     * @notice  Set the admin logic contract address
+     * @param   _adminLogic The address of the admin logic contract
+     */
+    function setAdminLogic(address _adminLogic) external onlyOwner {
+        if (_adminLogic == address(0)) revert YoloHook__ZeroAddress();
+        adminLogic = _adminLogic;
+    }
+
+    /**
+     * @notice  Set the utility logic contract address
+     * @param   _utilityLogic The address of the utility logic contract
+     */
+    function setUtilityLogic(address _utilityLogic) external onlyOwner {
+        if (_utilityLogic == address(0)) revert YoloHook__ZeroAddress();
+        utilityLogic = _utilityLogic;
+    }
+
     function createNewYoloAsset(string calldata _name, string calldata _symbol, uint8 _decimals, address _priceSource)
         external
         onlyOwner
         returns (address)
     {
-        // 1. Deploy the token
-        YoloSyntheticAsset asset = new YoloSyntheticAsset(_name, _symbol, _decimals);
-        address a = address(asset);
-
-        // 2. Register it
-        isYoloAsset[a] = true;
-        yoloAssetConfigs[a] =
-            YoloAssetConfiguration({yoloAssetAddress: a, maxMintableCap: 0, maxFlashLoanableAmount: 0});
-
-        // 3. Wire its price feed in the Oracle
-        address[] memory assets = new address[](1);
-        address[] memory priceSources = new address[](1);
-        assets[0] = a;
-        priceSources[0] = _priceSource;
-        yoloOracle.setAssetSources(assets, priceSources);
-
-        emit YoloAssetCreated(a, _name, _symbol, _decimals, _priceSource);
-
-        // 4. Automatically create a synthetic pool vs. the anchor (USY)
-        //    and mark it in our mapping so _beforeSwap kicks in correctly.
-        bool anchorIs0 = address(anchor) < a;
-        Currency c0 = Currency.wrap(anchorIs0 ? address(anchor) : a);
-        Currency c1 = Currency.wrap(anchorIs0 ? a : address(anchor));
-
-        PoolKey memory pk =
-            PoolKey({currency0: c0, currency1: c1, fee: 0, tickSpacing: 1, hooks: IHooks(address(this))});
-
-        // initialize price at 1:1 (sqrtPriceX96 = 2^96)
-        poolManager.initialize(pk, uint160(1) << 96);
-
-        // mark it synthetic
-        isSyntheticPool[PoolId.unwrap(pk.toId())] = true;
-
-        return a;
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature(
+                "createNewYoloAsset(string,string,uint8,address)", _name, _symbol, _decimals, _priceSource
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        return abi.decode(ret, (address));
     }
 
     function setYoloAssetConfig(address _asset, uint256 _newMintCap, uint256 _newFlashLoanCap) external onlyOwner {
-        if (!isYoloAsset[_asset]) revert YoloHook__NotYoloAsset();
-        YoloAssetConfiguration storage cfg = yoloAssetConfigs[_asset];
-        cfg.maxMintableCap = _newMintCap;
-        cfg.maxFlashLoanableAmount = _newFlashLoanCap;
-        emit YoloAssetConfigurationUpdated(_asset, _newMintCap, _newFlashLoanCap);
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature(
+                "setYoloAssetConfig(address,uint256,uint256)", _asset, _newMintCap, _newFlashLoanCap
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     function setCollateralConfig(address _collateral, uint256 _newSupplyCap, address _priceSource) external onlyOwner {
-        isWhiteListedCollateral[_collateral] = true;
-        CollateralConfiguration storage cfg = collateralConfigs[_collateral];
-        cfg.collateralAsset = _collateral;
-        cfg.maxSupplyCap = _newSupplyCap;
-        if (_priceSource != address(0)) {
-            address[] memory assets = new address[](1);
-            address[] memory priceSources = new address[](1);
-            assets[0] = _collateral;
-            priceSources[0] = _priceSource;
-
-            yoloOracle.setAssetSources(assets, priceSources);
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature(
+                "setCollateralConfig(address,uint256,address)", _collateral, _newSupplyCap, _priceSource
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
         }
-        emit CollateralConfigurationUpdated(_collateral, _newSupplyCap, _priceSource);
     }
 
     function setPairConfig(
@@ -595,70 +611,42 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 _ltv,
         uint256 _liquidationPenalty
     ) external onlyOwner {
-        if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-
-        CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
-        bool isNewPair = (config.collateral == address(0));
-
-        if (!isNewPair) {
-            // For existing pair, update global index with old rate first
-            _updateGlobalLiquidityIndex(config, config.interestRate);
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature(
+                "setPairConfig(address,address,uint256,uint256,uint256)",
+                _collateral,
+                _yoloAsset,
+                _interestRate,
+                _ltv,
+                _liquidationPenalty
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
         }
-
-        // Set/update configuration
-        config.collateral = _collateral;
-        config.yoloAsset = _yoloAsset;
-        config.interestRate = _interestRate;
-        config.ltv = _ltv;
-        config.liquidationPenalty = _liquidationPenalty;
-
-        if (isNewPair) {
-            // Initialize liquidity index to RAY (1.0 in 27 decimals)
-            config.liquidityIndexRay = RAY;
-            config.lastUpdateTimestamp = block.timestamp;
-
-            // Default expiration settings (can be updated later)
-            config.isExpirable = false;
-            config.expirePeriod = 0;
-
-            // Only push to arrays if this is a new pair
-            collateralToSupportedYoloAssets[_collateral].push(_yoloAsset);
-            yoloAssetsToSupportedCollateral[_yoloAsset].push(_collateral);
-        } else {
-            // Update timestamp for new rate
-            config.lastUpdateTimestamp = block.timestamp;
-        }
-
-        emit PairConfigUpdated(_collateral, _yoloAsset, _interestRate, _ltv, _liquidationPenalty);
     }
 
     function removePairConfig(address _collateral, address _yoloAsset) external onlyOwner {
-        // 1) remove the config mapping
-        delete pairConfigs[_collateral][_yoloAsset];
-
-        // 2) remove from collateral→assets list
-        _removeFromArray(collateralToSupportedYoloAssets[_collateral], _yoloAsset);
-
-        // 3) remove from asset→collaterals list
-        _removeFromArray(yoloAssetsToSupportedCollateral[_yoloAsset], _collateral);
-
-        emit PairDropped(_collateral, _yoloAsset);
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature("removePairConfig(address,address)", _collateral, _yoloAsset)
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     function setNewPriceSource(address _asset, address _priceSource) external onlyOwner {
-        if (_priceSource == address(0)) revert YoloHook__InvalidPriceSource();
-
-        // address oldPriceSource = yoloOracle.getSourceOfAsset(_asset);
-
-        address[] memory assets = new address[](1);
-        address[] memory priceSources = new address[](1);
-        assets[0] = _asset;
-        priceSources[0] = _priceSource;
-
-        yoloOracle.setAssetSources(assets, priceSources);
-
-        // emit PriceSourceUpdated(_asset, _priceSource, oldPriceSource);
+        (bool success, bytes memory ret) =
+            adminLogic.delegatecall(abi.encodeWithSignature("setNewPriceSource(address,address)", _asset, _priceSource));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     // ***************************** //
@@ -763,58 +751,23 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
-        if (_yoloAssets.length != _amounts.length) revert YoloHook__ParamsLengthMismatched();
-
-        uint256[] memory fees = new uint256[](_yoloAssets.length);
-        uint256[] memory totalRepayments = new uint256[](_yoloAssets.length);
-
-        // Mint flash loans to the borrower
-        for (uint256 i = 0; i < _yoloAssets.length;) {
-            if (!isYoloAsset[_yoloAssets[i]]) revert YoloHook__NotYoloAsset();
-
-            YoloAssetConfiguration storage assetConfig = yoloAssetConfigs[_yoloAssets[i]];
-            if (assetConfig.maxMintableCap <= 0) revert YoloHook__YoloAssetPaused();
-
-            // Check if flash loan amount exceeds the cap
-            if (assetConfig.maxFlashLoanableAmount > 0 && _amounts[i] > assetConfig.maxFlashLoanableAmount) {
-                revert YoloHook__ExceedsFlashLoanCap();
-            }
-
-            // Calculate the fee and total repayment
-            uint256 fee = (_amounts[i] * flashLoanFee) / PRECISION_DIVISOR;
-            fees[i] = fee;
-            totalRepayments[i] = _amounts[i] + fee;
-
-            // Mint the YoloAsset to the borrower
-            IYoloSyntheticAsset(_yoloAssets[i]).mint(msg.sender, _amounts[i]);
-
-            unchecked {
-                ++i;
+        (bool success, bytes memory ret) = utilityLogic.delegatecall(
+            abi.encodeWithSignature("flashLoan(address[],uint256[],bytes)", _yoloAssets, _amounts, _data)
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
             }
         }
-
-        // Call the borrower's callback function
-        IFlashBorrower(msg.sender).onBatchFlashLoan(msg.sender, _yoloAssets, _amounts, fees, _data);
-
-        // Burn the amount + fee from the borrower and mint fee to the treasury
-        for (uint256 i = 0; i < _yoloAssets.length;) {
-            // Ensure repayment
-            IYoloSyntheticAsset(_yoloAssets[i]).burn(msg.sender, totalRepayments[i]);
-
-            // Mint the fee to the protocol treasury
-            IYoloSyntheticAsset(_yoloAssets[i]).mint(treasury, fees[i]);
-            unchecked {
-                ++i;
-            }
-        }
-
-        emit FlashLoanExecuted(msg.sender, _yoloAssets, _amounts, fees);
     }
 
     function burnPendings() external {
+        // First validate that there are pending burns
         if (assetToBurn == address(0)) revert YoloHook__NoPendingBurns();
 
-        poolManager.unlock(abi.encode(CallbackData(2, "0x")));
+        // Call poolManager.unlock directly from YoloHook so the callback comes back to us
+        bytes memory callbackData = abi.encode(CallbackData({action: 2, data: bytes("")}));
+        poolManager.unlock(callbackData);
     }
 
     // ******************************//
@@ -837,174 +790,72 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         whenNotPaused
         returns (uint256 actualUsdcUsed, uint256 actualUsyUsed, uint256 actualLiquidityMinted, address actualReceiver)
     {
-        // Validation
-        if (_maxUsdcAmount == 0 || _maxUsyAmount == 0 || _receiver == address(0)) {
-            revert YoloHook__InvalidAddLiuidityParams();
-        }
-        require(address(sUSY) != address(0), "sUSY not initialized");
-
-        uint256 maxUsdcAmountInWad = _toWadUSDC(_maxUsdcAmount);
-        uint256 maxUsyAmountInWad = _maxUsyAmount;
-
-        uint256 usdcUsed;
-        uint256 usyUsed;
-        uint256 liquidity;
-
-        uint256 currentTotalSupply = sUSY.totalSupply();
-
-        if (currentTotalSupply == 0) {
-            // First liquidity - use the smaller side to enforce 1:1 ratio and mint sUSY 1:1 vs USD value
-            uint256 minInWad = maxUsdcAmountInWad < maxUsyAmountInWad ? maxUsdcAmountInWad : maxUsyAmountInWad;
-            usdcUsed = _fromWadUSDC(minInWad);
-            usyUsed = minInWad;
-
-            // Mint amount equals total USD value (USDC+USY) minus MINIMUM_LIQUIDITY
-            uint256 valueAdded = minInWad + minInWad; // both sides equal in WAD
-            if (valueAdded <= MINIMUM_LIQUIDITY) revert YoloHook__InsufficientAmount();
-            liquidity = valueAdded - MINIMUM_LIQUIDITY;
-            if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
-            // Lock MINIMUM_LIQUIDITY permanently (non-zero burn address)
-            sUSY.mint(address(1), MINIMUM_LIQUIDITY);
-        } else {
-            // Proportional liquidity to maintain pool ratio; mint sUSY based on USD value share
-            uint256 totalReserveUsdcInWad = _toWadUSDC(totalAnchorReserveUSDC);
-            uint256 totalReserveUsyInWad = totalAnchorReserveUSY;
-
-            // Calculate optimal amounts maintaining current ratio
-            uint256 optimalUsyInWad = (maxUsdcAmountInWad * totalReserveUsyInWad) / totalReserveUsdcInWad;
-            if (optimalUsyInWad <= maxUsyAmountInWad) {
-                usdcUsed = _fromWadUSDC(maxUsdcAmountInWad);
-                usyUsed = optimalUsyInWad;
-            } else {
-                uint256 optimalUsdcInWad = (maxUsyAmountInWad * totalReserveUsdcInWad) / totalReserveUsyInWad;
-                usdcUsed = _fromWadUSDC(optimalUsdcInWad);
-                usyUsed = maxUsyAmountInWad;
-            }
-
-            // Mint sUSY in proportion to value share
-            uint256 valueAdded = _toWadUSDC(usdcUsed) + usyUsed;
-            uint256 totalValueBefore = totalReserveUsdcInWad + totalReserveUsyInWad;
-            liquidity = (valueAdded * currentTotalSupply) / totalValueBefore;
-            if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
-        }
-
-        // Execute transfers - hook receives the tokens
-        IERC20(usdc).safeTransferFrom(msg.sender, address(this), usdcUsed);
-        IERC20(address(anchor)).safeTransferFrom(msg.sender, address(this), usyUsed);
-
-        // Convert real tokens to PM claim-tokens and update reserves via unlock callback
-        poolManager.unlock(
-            abi.encode(
-                CallbackData({
-                    action: 0,
-                    data: abi.encode(
-                        AddLiquidityCallbackData({
-                            sender: msg.sender,
-                            receiver: _receiver,
-                            usdcUsed: usdcUsed,
-                            usyUsed: usyUsed,
-                            liquidity: liquidity
-                        })
-                    )
-                })
+        (bool success, bytes memory ret) = anchorPoolLogic.delegatecall(
+            abi.encodeWithSignature(
+                "addLiquidity(uint256,uint256,uint256,address)",
+                _maxUsdcAmount,
+                _maxUsyAmount,
+                _minLiquidityReceive,
+                _receiver
             )
         );
-
-        // Mint sUSY receipt tokens after successful settlement
-        sUSY.mint(_receiver, liquidity);
-
-        return (usdcUsed, usyUsed, liquidity, _receiver);
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        return abi.decode(ret, (uint256, uint256, uint256, address));
     }
 
     function unlockCallback(bytes calldata _callbackData) external onlyPoolManager returns (bytes memory) {
         CallbackData memory callbackData = abi.decode(_callbackData, (CallbackData));
         uint8 action = callbackData.action;
 
-        if (action == 0) {
-            // CASE A: Add Liquidity
-            AddLiquidityCallbackData memory data = abi.decode(callbackData.data, (AddLiquidityCallbackData));
-            address receiver = data.receiver; // Receiver of LP tokens, not used in this hook
-            uint256 usdcUsed = data.usdcUsed; // USDC used in raw format
-            uint256 usyUsed = data.usyUsed; // USY used in raw format
-            uint256 liquidity = data.liquidity; // LP tokens minted
-
-            // Handle claim tokens properly
-            Currency cUSDC = Currency.wrap(usdc);
-            Currency cUSY = Currency.wrap(address(anchor));
-
-            // The hook already has the real tokens from addLiquidity
-            // Now deposit them to PoolManager to get claim tokens
-            
-            // Settle = hook pays real tokens to PoolManager
-            cUSDC.settle(poolManager, address(this), usdcUsed, false);
-            cUSY.settle(poolManager, address(this), usyUsed, false);
-
-            // Take = hook receives claim tokens from PoolManager
-            cUSDC.take(poolManager, address(this), usdcUsed, true);
-            cUSY.take(poolManager, address(this), usyUsed, true);
-
-            // NOW we have the USDC, so rehypothecate
-
-            // Update state
-            totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
-            totalAnchorReserveUSY += usyUsed; // USY (18-dec)
-
-            // Note: sUSY minting is handled in addLiquidity function, not here
-            // This callback only handles the token transfers via PoolManager
-            // emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
-
-            return abi.encode(address(this), receiver, usdcUsed, usyUsed, liquidity);
-        } else if (action == 1) {
-            // CASE B: Remove Liquidity
-            RemoveLiquidityCallbackData memory data = abi.decode(callbackData.data, (RemoveLiquidityCallbackData));
-            address initiator = data.initiator; // User who initiated the removal
-            address receiver = data.receiver; // User who receives the USDC and USY
-            uint256 usdcAmount = data.usdcAmount; // USDC amount to return
-            uint256 usyAmount = data.usyAmount; // USY amount to return
-            uint256 liquidity = data.liquidity; // LP tokens burnt
-
-            // Note: sUSY burning is handled in removeLiquidity function, not here
-            // This callback only handles the token transfers
-
-            // Update reserves
-            totalAnchorReserveUSDC -= usdcAmount;
-            totalAnchorReserveUSY -= usyAmount;
-
-            // Transfer tokens back to user using PoolManager's accounting systems
-            Currency usdcCurrency = Currency.wrap(usdc);
-            Currency usyCurrency = Currency.wrap(address(anchor));
-
-            usdcCurrency.settle(poolManager, address(this), usdcAmount, true);
-            usyCurrency.settle(poolManager, address(this), usyAmount, true);
-
-            // For USDC: Burn our claim tokens and give real USDC to user
-            usdcCurrency.take(poolManager, receiver, usdcAmount, false);
-            // For USY: Burn our claim tokens and give real USY to user
-            usyCurrency.take(poolManager, receiver, usyAmount, false);
-
-            // emit AnchorLiquidityRemoved(initiator, receiver, usdcAmount, usyAmount, liquidity);
-
-            return abi.encode(initiator, receiver, usdcAmount, usyAmount, liquidity);
+        if (action == 0 || action == 1) {
+            // CASE A & B: Anchor Pool Liquidity Operations
+            (bool success, bytes memory ret) = anchorPoolLogic.delegatecall(
+                abi.encodeWithSignature("handleLiquidityUnlockCallback(bytes)", _callbackData)
+            );
+            if (!success) {
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+            return ret;
         } else if (action == 2) {
             // Case C: Burn pending burnt tokens
-            _burnPending();
+            // We need to pass poolManager since it's immutable and can't be accessed via delegatecall
+            (bool success, bytes memory ret) =
+                utilityLogic.delegatecall(abi.encodeWithSignature("handleBurnPending(address)", address(poolManager)));
+            if (!success) {
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+            return ""; // Return empty bytes to satisfy PoolManager.unlock requirement
         } else if (action == 3) {
             // CASE D: Pull Real USDC
             uint256 amt = abi.decode(callbackData.data, (uint256));
-            Currency cUSDC = Currency.wrap(usdc);
-
-            // burn claim-tokens we currently hold
-            cUSDC.settle(poolManager, address(this), amt, true);
-            // receive the underlying ERC-20
-            cUSDC.take(poolManager, address(this), amt, false);
+            (bool success, bytes memory ret) = utilityLogic.delegatecall(
+                abi.encodeWithSignature("handlePullRealUSDC(uint256,address)", amt, address(poolManager))
+            );
+            if (!success) {
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
             return abi.encode(amt);
         } else if (action == 4) {
             // CASE E: Push Real USDC
             uint256 amt = abi.decode(callbackData.data, (uint256));
-            Currency cUSDC = Currency.wrap(usdc);
-
-            // hand ERC-20 back to PM and get fresh claim-tokens
-            cUSDC.settle(poolManager, address(this), amt, false);
+            (bool success, bytes memory ret) = utilityLogic.delegatecall(
+                abi.encodeWithSignature("handlePushRealUSDC(uint256,address)", amt, address(poolManager))
+            );
+            if (!success) {
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
             return abi.encode(amt);
         } else {
             revert YoloHook__UnknownUnlockActionError();
@@ -1023,62 +874,38 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         whenNotPaused
         returns (uint256 usdcAmount, uint256 usyAmount, uint256 liquidity, address receiver)
     {
-        // Validation
-        require(_liquidity > 0, "Invalid liquidity amount");
-        require(_receiver != address(0), "Invalid receiver");
-        require(address(sUSY) != address(0), "sUSY not initialized");
-
-        uint256 totalSupply = sUSY.totalSupply();
-        require(totalSupply > 0, "No liquidity in pool");
-        if (sUSY.balanceOf(msg.sender) < _liquidity) revert YoloHook__InsufficientLiquidityBalance();
-
-        // Calculate proportional amounts (rounding down to benefit pool)
-        usdcAmount = (_liquidity * totalAnchorReserveUSDC) / totalSupply;
-        usyAmount = (_liquidity * totalAnchorReserveUSY) / totalSupply;
-
-        if (usdcAmount < _minUSDC) revert YoloHook__InsufficientAmount();
-        if (usyAmount < _minUSY) revert YoloHook__InsufficientAmount();
-
-        // Handle rehypothecation if needed
-        _handleDehypothecation(usdcAmount);
-
-        // DO NOT update reserves here - let unlockCallback do it
-        // totalAnchorReserveUSDC and totalAnchorReserveUSY will be updated in unlockCallback
-
-        // Burn sUSY tokens from user
-        sUSY.burn(msg.sender, _liquidity);
-
-        // Settle transfers via PoolManager unlock callback (action 1)
-        poolManager.unlock(
-            abi.encode(
-                CallbackData({
-                    action: 1,
-                    data: abi.encode(
-                        RemoveLiquidityCallbackData({
-                            initiator: msg.sender,
-                            receiver: _receiver,
-                            usdcAmount: usdcAmount,
-                            usyAmount: usyAmount,
-                            liquidity: _liquidity
-                        })
-                    )
-                })
+        (bool success, bytes memory ret) = anchorPoolLogic.delegatecall(
+            abi.encodeWithSignature(
+                "removeLiquidity(uint256,uint256,uint256,address)", _minUSDC, _minUSY, _liquidity, _receiver
             )
         );
-
-        // Emit liquidity event for compatibility
-        if (anchorPoolToken0 == usdc) {
-            emit HookModifyLiquidity(anchorPoolId, _receiver, -int128(int256(usdcAmount)), -int128(int256(usyAmount)));
-        } else {
-            emit HookModifyLiquidity(anchorPoolId, _receiver, -int128(int256(usyAmount)), -int128(int256(usdcAmount)));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
         }
-
-        return (usdcAmount, usyAmount, _liquidity, _receiver);
+        return abi.decode(ret, (uint256, uint256, uint256, address));
     }
 
     // ***********************//
     // *** HOOK FUNCTIONS *** //
     // ********************** //
+
+    /**
+     * @notice Get the PoolManager address for delegated logic contracts
+     * @dev This is needed because poolManager is immutable and can't be accessed via storage slots
+     */
+    function getPoolManager() external view returns (IPoolManager) {
+        return poolManager;
+    }
+
+    function _beforeInitialize(address, PoolKey calldata, uint160) internal pure override returns (bytes4) {
+        return this.beforeInitialize.selector;
+    }
+
+    function _afterInitialize(address, PoolKey calldata, uint160, int24) internal pure override returns (bytes4) {
+        return this.afterInitialize.selector;
+    }
 
     /**
      * @notice  Returns the permissions for this hook.
@@ -1109,7 +936,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Burn pending if needed
-        if (assetToBurn != address(0)) _burnPending();
+        if (assetToBurn != address(0)) {
+            _burnPending();
+        }
 
         bytes32 poolId = PoolId.unwrap(key.toId());
         bool exactIn = params.amountSpecified < 0;
@@ -1185,12 +1014,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
             int128 delta0 = exactIn ? int128(uint128(gIn)) : -int128(uint128(out));
             int128 delta1 = exactIn ? -int128(uint128(out)) : int128(uint128(gIn));
-            
-            return (
-                this.beforeSwap.selector,
-                toBeforeSwapDelta(delta0, delta1),
-                0
-            );
+
+            return (this.beforeSwap.selector, toBeforeSwapDelta(delta0, delta1), 0);
         } else if (isSyntheticPool[poolId]) {
             // Scoped variables for synthetic pool
             Currency cIn;
@@ -1239,12 +1064,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
             int128 delta0 = exactIn ? int128(uint128(gIn)) : -int128(uint128(out));
             int128 delta1 = exactIn ? -int128(uint128(out)) : int128(uint128(gIn));
-            
-            return (
-                this.beforeSwap.selector,
-                toBeforeSwapDelta(delta0, delta1),
-                0
-            );
+
+            return (this.beforeSwap.selector, toBeforeSwapDelta(delta0, delta1), 0);
         } else {
             revert YoloHook__InvalidPoolId();
         }
@@ -1289,11 +1110,13 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _bridgeAddress  The address of the bridge contract to register
      */
     function registerBridge(address _bridgeAddress) external onlyOwner {
-        if (_bridgeAddress == address(0)) revert YoloHook__ZeroAddress();
-
-        registeredBridge = _bridgeAddress;
-
-        emit BridgeRegistered(_bridgeAddress);
+        (bool success, bytes memory ret) =
+            adminLogic.delegatecall(abi.encodeWithSignature("registerBridge(address)", _bridgeAddress));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -1302,14 +1125,15 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _amount     The amount to burn
      * @param   _sender     The original sender of the tokens
      */
-    function crossChainBurn(address _yoloAsset, uint256 _amount, address _sender) external onlyBridge {
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-        if (_amount == 0) revert YoloHook__InsufficientAmount();
-
-        // Burn the tokens from the sender
-        IYoloSyntheticAsset(_yoloAsset).burn(_sender, _amount);
-
-        emit CrossChainBurn(msg.sender, _yoloAsset, _amount, _sender);
+    function crossChainBurn(address _yoloAsset, uint256 _amount, address _sender) external {
+        (bool success, bytes memory ret) = utilityLogic.delegatecall(
+            abi.encodeWithSignature("crossChainBurn(address,uint256,address)", _yoloAsset, _amount, _sender)
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -1318,24 +1142,15 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param   _amount     The amount to mint
      * @param   _receiver   The receiver of the minted tokens
      */
-    function crossChainMint(address _yoloAsset, uint256 _amount, address _receiver) external onlyBridge {
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-        if (_amount == 0) revert YoloHook__InsufficientAmount();
-        if (_receiver == address(0)) revert YoloHook__ZeroAddress();
-
-        // Check if minting would exceed the cap
-        YoloAssetConfiguration storage config = yoloAssetConfigs[_yoloAsset];
-        if (config.maxMintableCap > 0) {
-            uint256 currentSupply = IERC20(_yoloAsset).totalSupply();
-            if (currentSupply + _amount > config.maxMintableCap) {
-                revert YoloHook__ExceedsYoloAssetMintCap();
+    function crossChainMint(address _yoloAsset, uint256 _amount, address _receiver) external {
+        (bool success, bytes memory ret) = utilityLogic.delegatecall(
+            abi.encodeWithSignature("crossChainMint(address,uint256,address)", _yoloAsset, _amount, _receiver)
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
             }
         }
-
-        // Mint the tokens to the receiver
-        IYoloSyntheticAsset(_yoloAsset).mint(_receiver, _amount);
-
-        emit CrossChainMint(msg.sender, _yoloAsset, _amount, _receiver);
     }
 
     // ***********************//
@@ -1604,6 +1419,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         view
         returns (uint256 actualDebt)
     {
+        // View functions must be implemented inline since delegatecall can't be used with view
         UserPosition storage position = positions[_user][_collateral][_yoloAsset];
         CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
 
@@ -1615,7 +1431,8 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             InterestMath.calculateEffectiveIndex(config.liquidityIndexRay, position.storedInterestRate, timeDelta);
 
         // Actual debt = normalizedDebtRay * effectiveIndex / RAY (round UP for user obligations)
-        return divUp(position.normalizedDebtRay * effectiveIndex, RAY);
+        uint256 product = position.normalizedDebtRay * effectiveIndex;
+        return (product + RAY - 1) / RAY; // Ceiling division
     }
 
     /**
@@ -1631,37 +1448,17 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         view
         returns (bool solvent)
     {
-        UserPosition storage position = positions[_user][_collateral][_yoloAsset];
-
-        if (position.borrower == address(0)) return true; // No position
-
-        uint256 collateralDecimals = IERC20Metadata(_collateral).decimals();
-        uint256 yoloAssetDecimals = IERC20Metadata(_yoloAsset).decimals();
-
-        // Get current collateral value
-        uint256 colVal =
-            yoloOracle.getAssetPrice(_collateral) * position.collateralSuppliedAmount / (10 ** collateralDecimals);
-
-        // Get current debt with compound interest
-        uint256 currentDebt = getCurrentDebt(_user, _collateral, _yoloAsset);
-        uint256 debtVal = yoloOracle.getAssetPrice(_yoloAsset) * currentDebt / (10 ** yoloAssetDecimals);
-
-        return debtVal * PRECISION_DIVISOR <= colVal * _ltv;
-    }
-
-    /**
-     * @notice  Internal function to burn pending tokens.
-     * @dev     Since the asset settlement only happens after the router has settled, we need to
-     *          keep pending tokens in memory and burn in either independantly or in the next swap.
-     */
-    function _burnPending() internal {
-        Currency c = Currency.wrap(assetToBurn);
-        c.settle(poolManager, address(this), amountToBurn, true); // burn the claim-tokens
-        c.take(poolManager, address(this), amountToBurn, false); // pull the real tokens
-        IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn); // burn the real tokens
-
-        assetToBurn = address(0);
-        amountToBurn = 0;
+        (bool success, bytes memory ret) = viewLogic.staticcall(
+            abi.encodeWithSignature(
+                "isPositionSolvent(address,address,address,uint256)", _user, _collateral, _yoloAsset, _ltv
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        return abi.decode(ret, (bool));
     }
 
     // ========================
@@ -1673,9 +1470,13 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @param _sUSYAddress Address of the deployed sUSY token
      */
     function setSUSYToken(address _sUSYAddress) external onlyOwner {
-        if (_sUSYAddress == address(0)) revert YoloHook__ZeroAddress();
-        sUSY = IStakedYoloUSD(_sUSYAddress);
-        emit sUSYDeployed(_sUSYAddress);
+        (bool success, bytes memory ret) =
+            adminLogic.delegatecall(abi.encodeWithSignature("setSUSYToken(address)", _sUSYAddress));
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
@@ -1684,10 +1485,29 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      */
     function getTotalAnchorPoolValue() external view returns (uint256 totalValue) {
         // Convert USDC (6 decimals) to 18 decimals (treat as $1)
-        uint256 usdcValue18 = _toWadUSDC(totalAnchorReserveUSDC);
+        uint256 usdcValue18 = totalAnchorReserveUSDC * USDC_SCALE_UP;
         // USY is 18 decimals and treated as $1 in the stable anchor pool
         uint256 usyValue18 = totalAnchorReserveUSY;
         return usdcValue18 + usyValue18;
+    }
+
+    // ========================
+    // INTERNAL HELPER FUNCTIONS
+    // ========================
+
+    /**
+     * @notice Internal function to burn pending tokens
+     * @dev Since the asset settlement only happens after the router has settled, we need to
+     *      keep pending tokens in memory and burn either independently or in the next swap
+     */
+    function _burnPending() internal {
+        Currency c = Currency.wrap(assetToBurn);
+        c.settle(poolManager, address(this), amountToBurn, true); // burn the claim-tokens
+        c.take(poolManager, address(this), amountToBurn, false); // pull the real tokens
+        IYoloSyntheticAsset(assetToBurn).burn(address(this), amountToBurn); // burn the real tokens
+
+        assetToBurn = address(0);
+        amountToBurn = 0;
     }
 
     // ========================
@@ -1705,16 +1525,20 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         external
         onlyOwner
     {
-        if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
-        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
-
-        CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
-        if (config.collateral == address(0)) revert YoloHook__InvalidPair();
-
-        config.isExpirable = _isExpirable;
-        config.expirePeriod = _expirePeriod;
-
-        emit ExpirationConfigUpdated(_collateral, _yoloAsset, _isExpirable, _expirePeriod);
+        (bool success, bytes memory ret) = adminLogic.delegatecall(
+            abi.encodeWithSignature(
+                "setExpirationConfig(address,address,bool,uint256)",
+                _collateral,
+                _yoloAsset,
+                _isExpirable,
+                _expirePeriod
+            )
+        );
+        if (!success) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
     }
 
     /**
