@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
@@ -11,7 +12,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  *          Only the owner (YoloProtocolHook) can mint and burn tokens, under circumstances
  *          of borrowing, redemption, flash loaning, swapping on UniswapV4, and cross-chaining.
  */
-contract YoloSyntheticAsset is ERC20, Ownable {
+contract YoloSyntheticAsset is ERC20, ERC20Permit, Ownable {
     uint8 private _customDecimals;
 
     /**
@@ -22,6 +23,7 @@ contract YoloSyntheticAsset is ERC20, Ownable {
      */
     constructor(string memory _name, string memory _symbol, uint8 _decimals)
         ERC20(_name, _symbol)
+        ERC20Permit(_name)
         Ownable(msg.sender)
     {
         _customDecimals = _decimals;
