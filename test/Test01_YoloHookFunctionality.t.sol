@@ -14,8 +14,16 @@ import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
 import {SyntheticAssetLogic} from "@yolo/contracts/core/SyntheticAssetLogic.sol";
+import {AnchorPoolLogic} from "@yolo/contracts/core/AnchorPoolLogic.sol";
+import {ViewLogic} from "@yolo/contracts/core/ViewLogic.sol";
+import {AdminLogic} from "@yolo/contracts/core/AdminLogic.sol";
+import {UtilityLogic} from "@yolo/contracts/core/UtilityLogic.sol";
 /*---------- IMPORT LIBRARIES & TYPES ----------*/
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 /*---------- IMPORT TEST SUITES ----------*/
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 
@@ -138,8 +146,18 @@ contract Test01_YoloHookFunctionality is
             symbolToDeployedAsset["USDC"] // USDC address
         );
 
+        // C-2. Deploy and set all logic contracts BEFORE calling any admin functions
         SyntheticAssetLogic syntheticAssetLogic = new SyntheticAssetLogic();
+        AnchorPoolLogic anchorPoolLogic = new AnchorPoolLogic();
+        ViewLogic viewLogic = new ViewLogic();
+        AdminLogic adminLogic = new AdminLogic();
+        UtilityLogic utilityLogic = new UtilityLogic();
+
         yoloHookProxy.setSyntheticAssetLogic(address(syntheticAssetLogic));
+        yoloHookProxy.setAnchorPoolLogic(address(anchorPoolLogic));
+        yoloHookProxy.setViewLogic(address(viewLogic));
+        yoloHookProxy.setAdminLogic(address(adminLogic));
+        yoloHookProxy.setUtilityLogic(address(utilityLogic));
 
         // D. Set Hook on YoloOracle
         yoloOracle.setHook(address(yoloHookProxy));
@@ -1731,7 +1749,7 @@ contract Test01_YoloHookFunctionality is
 
         // Ensure pair config is set for USDC/JPY collateral-asset pair (as owner)
         yoloHookProxy.setPairConfig(address(usdc), yJpyAsset, 500, 8000, 500);
-        
+
         vm.startPrank(user2);
         IERC20(usdc).approve(address(yoloHookProxy), collateralAmount);
         // Create borrowing position - use correct signature
@@ -1787,7 +1805,9 @@ contract Test01_YoloHookFunctionality is
         assertEq(principalOwed, borrowAmount, "Principal should remain unchanged");
         assertGt(interestOwed, 0, "Interest should have accrued");
         // Allow 1 wei tolerance due to rounding up in divUp calculations (protocol safety)
-        assertApproxEqAbs(principalOwed + interestOwed, debtAfterOneYear, 1, "Principal + Interest should equal total debt");
+        assertApproxEqAbs(
+            principalOwed + interestOwed, debtAfterOneYear, 1, "Principal + Interest should equal total debt"
+        );
 
         // Test 4: Partial repayment affects both interest and principal
         console.log("\n--- Test 4: Partial Repayment ---");
@@ -1868,12 +1888,9 @@ contract Test01_YoloHookFunctionality is
         usdc.approve(address(swapRouter), swapAmount);
 
         (PoolKey memory key_, bool usdcIs0) = _anchorKey();
-        SwapParams memory sp = SwapParams({
-            zeroForOne: usdcIs0,
-            amountSpecified: -int256(swapAmount),
-            sqrtPriceLimitX96: 0
-        });
-        PoolSwapTest.TestSettings memory settings = 
+        SwapParams memory sp =
+            SwapParams({zeroForOne: usdcIs0, amountSpecified: -int256(swapAmount), sqrtPriceLimitX96: 0});
+        PoolSwapTest.TestSettings memory settings =
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         swapRouter.swap(key_, sp, settings, "");

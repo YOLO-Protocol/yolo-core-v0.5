@@ -9,6 +9,10 @@ import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTra
 import {YoloHook} from "@yolo/contracts/core/YoloHook.sol";
 import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
 import {SyntheticAssetLogic} from "@yolo/contracts/core/SyntheticAssetLogic.sol";
+import {AnchorPoolLogic} from "@yolo/contracts/core/AnchorPoolLogic.sol";
+import {ViewLogic} from "@yolo/contracts/core/ViewLogic.sol";
+import {AdminLogic} from "@yolo/contracts/core/AdminLogic.sol";
+import {UtilityLogic} from "@yolo/contracts/core/UtilityLogic.sol";
 import {StakedYoloUSD} from "@yolo/contracts/tokenization/StakedYoloUSD.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
@@ -48,6 +52,10 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
     YoloHook public yoloHookProxy;
     YoloOracle public yoloOracle;
     SyntheticAssetLogic public syntheticAssetLogic;
+    AnchorPoolLogic public anchorPoolLogic;
+    ViewLogic public viewLogic;
+    AdminLogic public adminLogic;
+    UtilityLogic public utilityLogic;
     StakedYoloUSD public sUSY;
 
     mapping(string => address) yoloAssetToAddress;
@@ -203,7 +211,15 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
 
         // E-3. Deploy SyntheticAssetLogic delegate contract
         syntheticAssetLogic = new SyntheticAssetLogic();
+        anchorPoolLogic = new AnchorPoolLogic();
+        viewLogic = new ViewLogic();
+        adminLogic = new AdminLogic();
+        utilityLogic = new UtilityLogic();
         _logContractAddress("SyntheticAssetLogic: ", address(syntheticAssetLogic));
+        _logContractAddress("AnchorPoolLogic: ", address(anchorPoolLogic));
+        _logContractAddress("ViewLogic: ", address(viewLogic));
+        _logContractAddress("AdminLogic: ", address(adminLogic));
+        _logContractAddress("UtilityLogic: ", address(utilityLogic));
         console.log("YoloHook Implementation Owner Is: ", yoloHookImplementation.owner());
         console.log("YoloHook Proxy Before Initializa Owner Is: ", yoloHookProxy.owner());
 
@@ -221,6 +237,10 @@ contract Script01_DeployTestnet is Script, Config01_OraclesAndAssets, Config02_A
 
         // F-2. Set SyntheticAssetLogic delegate contract
         yoloHookProxy.setSyntheticAssetLogic(address(syntheticAssetLogic));
+        yoloHookProxy.setAnchorPoolLogic(address(anchorPoolLogic));
+        yoloHookProxy.setViewLogic(address(viewLogic));
+        yoloHookProxy.setAdminLogic(address(adminLogic));
+        yoloHookProxy.setUtilityLogic(address(utilityLogic));
         console.log("SyntheticAssetLogic set on YoloHook");
 
         usy = address(yoloHookProxy.anchor());
