@@ -98,6 +98,15 @@ abstract contract YoloStorage {
     uint256 internal _pendingRehypoUSDC;
     uint256 internal _pendingDehypoUSDC;
 
+    // Additional storage (not in YoloStorage)
+    address public registeredBridge;
+
+    // NEW: Add missing logic contract addresses
+    address public anchorPoolLogic;
+    address public viewLogic;
+    address public adminLogic;
+    address public utilityLogic;
+
     // ========================
     // DATA STRUCTURES
     // ========================
@@ -158,7 +167,7 @@ abstract contract YoloStorage {
     // NEW: Constants for compound interest calculations
     uint256 public constant RAY = 1e27; // Aave's 27 decimal precision
     uint256 public constant SECONDS_PER_YEAR = 365 days;
-    
+
     // Security constants
     uint256 internal constant DUST_THRESHOLD = 1e15; // 0.001 units (more meaningful than 1 wei)
     uint256 internal constant MINIMUM_BORROW_AMOUNT = 1e16; // 0.01 units minimum borrow
@@ -191,6 +200,23 @@ abstract contract YoloStorage {
     error YoloHook__InvalidRehypothecationRatio();
     error YoloHook__RehypothecationDisabled();
     error YoloHook__ZeroAddress();
+
+    // Hook-specific errors
+    error YoloHook__ParamsLengthMismatched();
+    error YoloHook__MustAddLiquidityThroughHook();
+    error YoloHook__InvalidAddLiquidityParams();
+    error YoloHook__InsufficientLiquidityMinted();
+    error YoloHook__InsufficientLiquidityBalance();
+    error YoloHook__UnknownUnlockActionError();
+    error YoloHook__InvalidPoolId();
+    error YoloHook__InsufficientReserves();
+    error YoloHook__StableswapConvergenceError();
+    error YoloHook__InvalidOutput();
+    error YoloHook__InvalidSwapAmounts();
+    error YoloHook__InvalidPriceSource();
+    error YoloHook__ExceedsFlashLoanCap();
+    error YoloHook__NoPendingBurns();
+    error YoloHook__NotBridge();
 
     // ========================
     // EVENTS
@@ -258,4 +284,38 @@ abstract contract YoloStorage {
     event EmergencyUSYCWithdrawal(uint256 usycAmount, uint256 usdcReceived);
     event RehypothecationGain(uint256 profit);
     event RehypothecationLoss(uint256 loss);
+
+    // Hook-specific events
+    event HookModifyLiquidity(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1);
+    event HookSwap(
+        bytes32 indexed id,
+        address indexed sender,
+        int128 amount0,
+        int128 amount1,
+        uint128 hookLPfeeAmount0,
+        uint128 hookLPfeeAmount1
+    );
+    event UpdateStableSwapFee(uint256 newStableSwapFee, uint256 oldStableSwapFee);
+    event UpdateSyntheticSwapFee(uint256 newSyntheticSwapFee, uint256 oldSynthethicSwapFee);
+    event UpdateFlashLoanFee(uint256 newFlashLoanFee, uint256 oldFlashLoanFee);
+    event YoloAssetCreated(address indexed asset, string name, string symbol, uint8 decimals, address priceSource);
+    event YoloAssetConfigurationUpdated(
+        address yoloAsset, uint256 newMaxMintableCap, uint256 newMaxFlashLoanableAmount
+    );
+    event CollateralConfigurationUpdated(address indexed collateral, uint256 newSupplyCap, address newPriceSource);
+    event PairConfigUpdated(
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 interestRate,
+        uint256 ltv,
+        uint256 liquidationPenalty
+    );
+    event PairDropped(address collateral, address yoloAsset);
+    event FlashLoanExecuted(address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees);
+    event BridgeRegistered(address indexed bridge);
+    event CrossChainBurn(address indexed bridge, address indexed yoloAsset, uint256 amount, address indexed sender);
+    event CrossChainMint(address indexed bridge, address indexed yoloAsset, uint256 amount, address indexed receiver);
+    event LiquidityIndexUpdated(
+        address indexed collateral, address indexed yoloAsset, uint256 oldIndex, uint256 newIndex
+    );
 }
