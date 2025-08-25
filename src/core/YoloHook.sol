@@ -24,6 +24,8 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {ITeller} from "@yolo/contracts/interfaces/ITeller.sol";
 /*---------- IMPORT CONTRACTS ----------*/
 import {YoloSyntheticAsset} from "@yolo/contracts/tokenization/YoloSyntheticAsset.sol";
+import {InterestMath} from "../libraries/InterestMath.sol";
+import {IStakedYoloUSD} from "../interfaces/IStakedYoloUSD.sol";
 /*---------- IMPORT BASE CONTRACTS ----------*/
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
@@ -48,6 +50,80 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     using PoolIdLibrary for PoolId;
     using CurrencyLibrary for Currency;
     using CurrencySettler for Currency;
+
+    // ========================
+    // STORAGE LAYOUT - MUST MATCH YoloStorage EXACTLY
+    // ========================
+
+    // --- YoloHook Core Storage ---
+    address public treasury;
+    IYoloOracle public yoloOracle;
+
+    // Fee Configuration
+    uint256 public stableSwapFee;
+    uint256 public syntheticSwapFee;
+    uint256 public flashLoanFee;
+
+    // Anchor Pool & Stableswap
+    IYoloSyntheticAsset public anchor;
+    address public usdc;
+    bytes32 public anchorPoolId;
+    address public anchorPoolToken0;
+
+    mapping(bytes32 => bool) public isAnchorPool;
+
+    // NEW: sUSY Receipt Token Integration
+    IStakedYoloUSD public sUSY;
+
+    // Synthetic Pools
+    mapping(bytes32 => bool) public isSyntheticPool;
+
+    // Synthetic Swap Placeholders
+    address public assetToBurn;
+    uint256 public amountToBurn;
+
+    uint256 internal USDC_SCALE_UP;
+
+    // Anchor pool reserves
+    uint256 public totalAnchorReserveUSDC;
+    uint256 public totalAnchorReserveUSY;
+
+    // Asset & Collateral Configurations
+    mapping(address => bool) public isYoloAsset;
+    mapping(address => bool) public isWhiteListedCollateral;
+
+    mapping(address => YoloAssetConfiguration) public yoloAssetConfigs;
+    mapping(address => CollateralConfiguration) public collateralConfigs;
+
+    mapping(address => address[]) internal yoloAssetsToSupportedCollateral;
+    mapping(address => address[]) internal collateralToSupportedYoloAssets;
+    mapping(address => mapping(address => CollateralToYoloAssetConfiguration)) public pairConfigs;
+
+    // User Positions
+    mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
+    mapping(address => UserPositionKey[]) public userPositionKeys;
+
+    // Delegation Logic Contracts
+    address public syntheticAssetLogic;
+    address public rehypothecationLogic;
+
+    // Rehypothecation Configuration
+    ITeller public usycTeller;
+    IERC20 public usyc;
+    bool public rehypothecationEnabled;
+    uint256 public rehypothecationRatio;
+    uint256 public usycBalance;
+
+    // Storage variables for cost basis tracking
+    uint256 internal usycCostBasisUSDC;
+    uint256 internal usycQuantity;
+
+    // Storage variables for pending rehypothecation
+    uint256 internal _pendingRehypoUSDC;
+    uint256 internal _pendingDehypoUSDC;
+
+    // Additional storage (not in YoloStorage)
+    address public registeredBridge;
 
     // ***************** //
     // *** DATATYPES *** //
@@ -77,15 +153,16 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 liquidity; // LP tokens burnt
     }
 
+    // Storage struct definitions (must match YoloStorage exactly)
     struct YoloAssetConfiguration {
         address yoloAssetAddress;
-        uint256 maxMintableCap; // 0 == Pause
+        uint256 maxMintableCap;
         uint256 maxFlashLoanableAmount;
     }
 
     struct CollateralConfiguration {
         address collateralAsset;
-        uint256 maxSupplyCap; // 0 == Pause
+        uint256 maxSupplyCap;
     }
 
     struct CollateralToYoloAssetConfiguration {
@@ -94,6 +171,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         uint256 interestRate;
         uint256 ltv;
         uint256 liquidationPenalty;
+        // NEW: Global liquidity index tracking (27 decimal precision)
+        uint256 liquidityIndexRay; // Current cumulative index
+        uint256 lastUpdateTimestamp; // Last time index was updated
+        // NEW: Expiration features
+        bool isExpirable; // Whether positions in this pair expire
+        uint256 expirePeriod; // Duration in seconds (e.g., 365 days, 6 months)
     }
 
     struct UserPosition {
@@ -101,10 +184,14 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         address collateral;
         uint256 collateralSuppliedAmount;
         address yoloAsset;
-        uint256 yoloAssetMinted;
+        // UPDATED: Clean interest accounting for compound interest
+        uint256 normalizedDebtRay; // Normalized total debt (includes principal + interest)
+        uint256 normalizedPrincipalRay; // Normalized principal only (for interest calculation)
+        uint256 userLiquidityIndexRay; // User's index when last updated
         uint256 lastUpdatedTimeStamp;
-        uint256 storedInterestRate;
-        uint256 accruedInterest;
+        uint256 storedInterestRate; // User's locked rate until renewal
+        // NEW: Expiration tracking
+        uint256 expiryTimestamp; // When position expires (0 if non-expirable)
     }
 
     struct UserPositionKey {
@@ -112,92 +199,112 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         address yoloAsset;
     }
 
-    // ******************************//
-    // *** CONSTANT & IMMUTABLES *** //
-    // ***************************** //
-    uint256 public constant PRECISION_DIVISOR = 10000; // 100%
-    uint256 private constant YEAR = 365 days;
+    // ==============================
+    // CONSTANTS (must match YoloStorage)
+    // ==============================
+    uint256 public constant PRECISION_DIVISOR = 10000;
+    uint256 internal constant YEAR = 365 days;
+    uint256 internal constant MINIMUM_LIQUIDITY = 1000;
 
-    // ***************************//
-    // *** CONTRACT VARIABLES *** //
-    // ************************** //
+    // NEW: Constants for compound interest calculations
+    uint256 public constant RAY = 1e27; // Aave's 27 decimal precision
+    uint256 public constant SECONDS_PER_YEAR = 365 days;
 
-    address public treasury; // Address of the treasury to collect fees
-    // IWETH public weth;
-    IYoloOracle public yoloOracle;
+    // ==============================
+    // ERRORS (must match YoloStorage)
+    // ==============================
 
-    /*----- Fees Configuration -----*/
-    uint256 public stableSwapFee; // Swap fee for the anchor pool, in basis points (e.g., 100 = 1%)
-    uint256 public syntheticSwapFee; // Swap fee for synthetic assets, in basis points (e.g., 100 = 1%)
-    uint256 public flashLoanFee; // Flash loan fee for synthetic assets, in basis points (e.g., 100 = 1%)
+    // Synthetic Asset Errors
+    error YoloHook__InsufficientAmount();
+    error YoloHook__NotYoloAsset();
+    error YoloHook__CollateralNotRecognized();
+    error YoloHook__InvalidPair();
+    error YoloHook__YoloAssetPaused();
+    error YoloHook__CollateralPaused();
+    error YoloHook__NotSolvent();
+    error YoloHook__ExceedsYoloAssetMintCap();
+    error YoloHook__ExceedsCollateralCap();
+    error YoloHook__InvalidPosition();
+    error YoloHook__NoDebt();
+    error YoloHook__RepayExceedsDebt();
+    error YoloHook__Solvent();
+    error YoloHook__InvalidSeizeAmount();
 
-    /*----- Anchor Pool & Stableswap Variables -----*/
-    IYoloSyntheticAsset public anchor;
-    address public usdc; // USDC address, used in the anchor pool to pair with USY
-    bytes32 public anchorPoolId; // Anchor pool ID, used to identify the pool in the PoolManager
-    address public anchorPoolToken0; // Token0 address of the anchor pool, set in initialize
+    // NEW: Expiration errors
+    error YoloHook__PositionNotExpirable();
+    error YoloHook__PositionExpired();
 
-    mapping(bytes32 => bool) public isAnchorPool;
-    uint256 public anchorPoolLiquiditySupply; // Total LP tokens for anchor pool
-    mapping(address => uint256) public anchorPoolLPBalance; // User LP balances
-
-    /*----- Synthetic Pools -----*/
-    mapping(bytes32 => bool) public isSyntheticPool;
-
-    /*----- Synthetic Swap Placeholders -----*/
-    // => To be used in afterSwap to burn the pulled YoloAssets after settlement
-    address public assetToBurn;
-    uint256 public amountToBurn;
-
-    uint256 private USDC_SCALE_UP; // Make sure USDC is scaled up to 18 decimals
-
-    // Anchor pool reserves
-    uint256 public totalAnchorReserveUSDC;
-    uint256 public totalAnchorReserveUSY;
-
-    // Constants for stableswap
-    uint256 private constant MINIMUM_LIQUIDITY = 1000;
-
-    /*----- Asset & Collateral Configurations -----*/
-    mapping(address => bool) public isYoloAsset; // Mapping to check if an address is a Yolo asset
-    mapping(address => bool) public isWhiteListedCollateral; // Mapping to check if an address is a whitelisted collateral asset
-
-    mapping(address => YoloAssetConfiguration) public yoloAssetConfigs; // Maps Yolo assets to its configuration
-    mapping(address => CollateralConfiguration) public collateralConfigs; // Maps collateral to its configuration
-
-    mapping(address => address[]) yoloAssetsToSupportedCollateral; // List of collaterals can be used to mint a Yolo Asset
-    mapping(address => address[]) collateralToSupportedYoloAssets; // List of Yolo assets can be minted with a particular asset
-    mapping(address => mapping(address => CollateralToYoloAssetConfiguration)) public pairConfigs; // Pair Configs of (collateral => asset)
-
-    /*----- User Positions -----*/
-    mapping(address => mapping(address => mapping(address => UserPosition))) public positions;
-    mapping(address => UserPositionKey[]) public userPositionKeys;
-
-    /*----- Delegation Logic Contract -----*/
-    address public syntheticAssetLogic;
-    address public rehypothecationLogic;
-
-    /*----- Rehypothecation Configuration -----*/
-    ITeller public usycTeller; // USYC Teller contract for rehypothecation
-    IERC20 public usyc; // USYC token contract
-    bool public rehypothecationEnabled; // Enable/disable rehypothecation
-    uint256 public rehypothecationRatio; // Max % of USDC to rehypothecate (e.g., 7500 = 75%)
-    uint256 public usycBalance; // Total USYC balance from rehypothecation
-
-    // Storage variables for cost basis tracking
-    uint256 private usycCostBasisUSDC; // Total USDC spent to acquire current USYC
-    uint256 private usycQuantity; // Total USYC tokens held (same as usycBalance, can merge)
-
-    // Storage variables for pending rehypothecation
-    uint256 private _pendingRehypoUSDC; // USDC to convert to USYC after swap
-    uint256 private _pendingDehypoUSDC; // USDC needed from USYC after swap
-
-    /*----- Cross-Chain Bridge Configuration -----*/
-    address public registeredBridge; // Single registered bridge address
+    // Rehypothecation Errors
+    error YoloHook__InvalidRehypothecationRatio();
+    error YoloHook__RehypothecationDisabled();
+    error YoloHook__ZeroAddress();
 
     // ***************//
     // *** EVENTS *** //
     // ************** //
+
+    // Synthetic Asset Events (must match YoloStorage)
+    event Borrowed(
+        address indexed user,
+        address indexed collateral,
+        uint256 collateralAmount,
+        address indexed yoloAsset,
+        uint256 borrowAmount
+    );
+
+    event PositionPartiallyRepaid(
+        address indexed user,
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 totalRepaid,
+        uint256 interestPaid,
+        uint256 principalPaid,
+        uint256 remainingPrincipal,
+        uint256 remainingInterest
+    );
+
+    event PositionFullyRepaid(
+        address indexed user,
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 totalRepaid,
+        uint256 collateralReturned
+    );
+
+    event Withdrawn(address indexed user, address indexed collateral, address indexed yoloAsset, uint256 amount);
+
+    event Liquidated(
+        address indexed user,
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 repayAmount,
+        uint256 collateralSeized,
+        bool isExpiredLiquidation
+    );
+
+    // NEW: Expiration events
+    event ExpirationConfigUpdated(
+        address indexed collateral, address indexed yoloAsset, bool isExpirable, uint256 expirePeriod
+    );
+    event PositionRenewed(
+        address indexed user,
+        address indexed collateral,
+        address indexed yoloAsset,
+        uint256 newExpiryTime,
+        uint256 feesPaid
+    );
+
+    // NEW: sUSY events
+    event sUSYDeployed(address indexed sUSYAddress);
+
+    // Rehypothecation Events
+    event RehypothecationStatusUpdated(bool enabled);
+    event RehypothecationConfigured(address indexed teller, address indexed usyc, uint256 ratio);
+    event RehypothecationExecuted(bool isBuy, uint256 amount, uint256 received);
+    event RehypothecationRebalanced(bool isBuy, uint256 amount, uint256 received);
+    event EmergencyUSYCWithdrawal(uint256 usycAmount, uint256 usdcReceived);
+    event RehypothecationGain(uint256 profit);
+    event RehypothecationLoss(uint256 loss);
 
     /**
      * @notice  Emitted when liquidity is added or removed from the hook. Complies with Uniswap V4 best practice guidance.
@@ -240,58 +347,11 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     event PairDropped(address collateral, address yoloAsset);
 
-    event Borrowed(
-        address indexed user,
-        address indexed collateral,
-        uint256 collateralAmount,
-        address indexed yoloAsset,
-        uint256 borrowAmount
-    );
-
-    event PositionPartiallyRepaid(
-        address indexed user,
-        address indexed collateral,
-        address indexed yoloAsset,
-        uint256 totalRepaid,
-        uint256 interestPaid,
-        uint256 principalPaid,
-        uint256 remainingPrincipal,
-        uint256 remainingInterest
-    );
-
-    event PositionFullyRepaid(
-        address indexed user,
-        address indexed collateral,
-        address indexed yoloAsset,
-        uint256 totalRepaid,
-        uint256 collateralReturned
-    );
-
-    event Withdrawn(address indexed user, address indexed collateral, address indexed yoloAsset, uint256 amount);
-
-    event Liquidated(
-        address indexed user,
-        address indexed collateral,
-        address indexed yoloAsset,
-        uint256 repayAmount,
-        uint256 collateralSeized
-    );
+    // Events for borrow/repay/withdraw/liquidate are declared in YoloStorage
 
     event FlashLoanExecuted(address indexed flashBorrower, address[] yoloAssets, uint256[] amounts, uint256[] fees);
 
-    event RehypothecationStatusUpdated(bool enabled);
-
-    event RehypothecationConfigured(address indexed teller, address indexed usyc, uint256 ratio);
-
-    event RehypothecationExecuted(bool isBuy, uint256 amount, uint256 received);
-
-    event RehypothecationRebalanced(bool isBuy, uint256 amount, uint256 received);
-
-    event EmergencyUSYCWithdrawal(uint256 usycAmount, uint256 usdcReceived);
-
-    event RehypothecationGain(uint256 profit);
-
-    event RehypothecationLoss(uint256 loss);
+    // Rehypothecation events are declared in YoloStorage
 
     event BridgeRegistered(address indexed bridge);
 
@@ -299,41 +359,30 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
     event CrossChainMint(address indexed bridge, address indexed yoloAsset, uint256 amount, address indexed receiver);
 
+    // Expiration and sUSY events are declared in YoloStorage
+    event LiquidityIndexUpdated(
+        address indexed collateral, address indexed yoloAsset, uint256 oldIndex, uint256 newIndex
+    );
+
     // ***************//
     // *** ERRORS *** //
     // ************** //
     error Ownable__AlreadyInitialized();
+    // Main errors inherited from YoloStorage, Hook-specific errors:
     error YoloHook__ParamsLengthMismatched();
-    error YoloHook__ZeroAddress();
     error YoloHook__MustAddLiquidityThroughHook();
     error YoloHook__InvalidAddLiuidityParams();
     error YoloHook__InsufficientLiquidityMinted();
     error YoloHook__InsufficientLiquidityBalance();
-    error YoloHook__InsufficientAmount();
     error YoloHook__UnknownUnlockActionError();
     error YoloHook__InvalidPoolId();
     error YoloHook__InsufficientReserves();
     error YoloHook__StableswapConvergenceError();
     error YoloHook__InvalidOutput();
     error YoloHook__InvalidSwapAmounts();
-    error YoloHook__NotYoloAsset();
-    error YoloHook__CollateralNotRecognized();
     error YoloHook__InvalidPriceSource();
-    error YoloHook__InvalidPair();
-    error YoloHook__NoDebt();
-    error YoloHook__RepayExceedsDebt();
-    error YoloHook__YoloAssetPaused();
-    error YoloHook__CollateralPaused();
-    error YoloHook__Solvent();
-    error YoloHook__NotSolvent();
-    error YoloHook__ExceedsYoloAssetMintCap();
-    error YoloHook__ExceedsCollateralCap();
-    error YoloHook__InvalidPosition();
-    error YoloHook__InvalidSeizeAmount();
     error YoloHook__ExceedsFlashLoanCap();
     error YoloHook__NoPendingBurns();
-    error YoloHook__InvalidRehypothecationRatio();
-    error YoloHook__RehypothecationDisabled();
     error YoloHook__NotBridge();
 
     // ********************//
@@ -400,6 +449,10 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         // Initialize the WETH collateral configuration
         isWhiteListedCollateral[_wethAddress] = true;
         collateralConfigs[_wethAddress] = CollateralConfiguration(_wethAddress, 0); // Initialize with 0 cap
+
+        // Approve PoolManager to spend hook's tokens for claim token management
+        IERC20(_usdcAddress).approve(address(poolManager), type(uint256).max);
+        IERC20(address(anchor)).approve(address(poolManager), type(uint256).max);
 
         /*----- Initialize Anchor Pool on Pool Manager -----*/
 
@@ -545,20 +598,36 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
         if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
 
-        bool isNewPair = pairConfigs[_collateral][_yoloAsset].collateral == address(0);
+        CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
+        bool isNewPair = (config.collateral == address(0));
 
-        pairConfigs[_collateral][_yoloAsset] = CollateralToYoloAssetConfiguration({
-            collateral: _collateral,
-            yoloAsset: _yoloAsset,
-            interestRate: _interestRate,
-            ltv: _ltv,
-            liquidationPenalty: _liquidationPenalty
-        });
+        if (!isNewPair) {
+            // For existing pair, update global index with old rate first
+            _updateGlobalLiquidityIndex(config, config.interestRate);
+        }
 
-        // Only push to arrays if this is a new pair
+        // Set/update configuration
+        config.collateral = _collateral;
+        config.yoloAsset = _yoloAsset;
+        config.interestRate = _interestRate;
+        config.ltv = _ltv;
+        config.liquidationPenalty = _liquidationPenalty;
+
         if (isNewPair) {
+            // Initialize liquidity index to RAY (1.0 in 27 decimals)
+            config.liquidityIndexRay = RAY;
+            config.lastUpdateTimestamp = block.timestamp;
+
+            // Default expiration settings (can be updated later)
+            config.isExpirable = false;
+            config.expirePeriod = 0;
+
+            // Only push to arrays if this is a new pair
             collateralToSupportedYoloAssets[_collateral].push(_yoloAsset);
             yoloAssetsToSupportedCollateral[_yoloAsset].push(_collateral);
+        } else {
+            // Update timestamp for new rate
+            config.lastUpdateTimestamp = block.timestamp;
         }
 
         emit PairConfigUpdated(_collateral, _yoloAsset, _interestRate, _ltv, _liquidationPenalty);
@@ -768,104 +837,83 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         whenNotPaused
         returns (uint256 actualUsdcUsed, uint256 actualUsyUsed, uint256 actualLiquidityMinted, address actualReceiver)
     {
-        // Guard clause: ensure that the amounts are greater than zero, and the receiver is not zero address
+        // Validation
         if (_maxUsdcAmount == 0 || _maxUsyAmount == 0 || _receiver == address(0)) {
             revert YoloHook__InvalidAddLiuidityParams();
         }
-        uint256 maxUsdcAmountInWad = _toWadUSDC(_maxUsdcAmount); // Convert raw USDC to WAD (18 decimals)
-        uint256 maxUsyAmountInWad = _maxUsyAmount; // USY is already in 18 decimals
+        require(address(sUSY) != address(0), "sUSY not initialized");
+
+        uint256 maxUsdcAmountInWad = _toWadUSDC(_maxUsdcAmount);
+        uint256 maxUsyAmountInWad = _maxUsyAmount;
 
         uint256 usdcUsed;
-        uint256 usdcUsedInWad;
         uint256 usyUsed;
-        uint256 usyUsedInWad;
         uint256 liquidity;
 
-        if (anchorPoolLiquiditySupply == 0) {
-            // CASE A: If first time adding liquidity, ensure that the liquidity ratio is 1:1
+        uint256 currentTotalSupply = sUSY.totalSupply();
 
-            // Check and use the smaller of the two amounts
-            usdcUsedInWad = maxUsdcAmountInWad > maxUsyAmountInWad ? maxUsyAmountInWad : maxUsdcAmountInWad; // Use the smaller of the two amounts
-            usyUsedInWad = usdcUsedInWad; // Use the same amount for USY
+        if (currentTotalSupply == 0) {
+            // First liquidity - use the smaller side to enforce 1:1 ratio and mint sUSY 1:1 vs USD value
+            uint256 minInWad = maxUsdcAmountInWad < maxUsyAmountInWad ? maxUsdcAmountInWad : maxUsyAmountInWad;
+            usdcUsed = _fromWadUSDC(minInWad);
+            usyUsed = minInWad;
 
-            // Calculate liquidity using the square root formula
-            liquidity = _sqrt(usdcUsedInWad * usyUsedInWad) - MINIMUM_LIQUIDITY; // Calculate liquidity
-
-            // Ensure that the liquidity is above the minimum requirement
+            // Mint amount equals total USD value (USDC+USY) minus MINIMUM_LIQUIDITY
+            uint256 valueAdded = minInWad + minInWad; // both sides equal in WAD
+            if (valueAdded <= MINIMUM_LIQUIDITY) revert YoloHook__InsufficientAmount();
+            liquidity = valueAdded - MINIMUM_LIQUIDITY;
             if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
-
-            // anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY; // Update the total supply of LP tokens
-            // anchorPoolLPBalance[address(0)] += MINIMUM_LIQUIDITY; // Assign the minimum liquidity to a dummy address (0) for first time liquidity provision
-
-            usdcUsed = _fromWadUSDC(usdcUsedInWad); // Convert WAD USDC back to raw USDC
-            usyUsed = usyUsedInWad; // USY is already in raw format
+            // Lock MINIMUM_LIQUIDITY permanently (non-zero burn address)
+            sUSY.mint(address(1), MINIMUM_LIQUIDITY);
         } else {
-            // CASE B: If not first time, ensure that the liquidity used is optimal according to the proportions
+            // Proportional liquidity to maintain pool ratio; mint sUSY based on USD value share
             uint256 totalReserveUsdcInWad = _toWadUSDC(totalAnchorReserveUSDC);
             uint256 totalReserveUsyInWad = totalAnchorReserveUSY;
 
-            // Calculate required amounts to maintain ratio
-            uint256 usdcRequiredInWad =
-                (maxUsyAmountInWad * totalReserveUsdcInWad + totalReserveUsyInWad - 1) / totalReserveUsyInWad;
-            uint256 usyRequiredInWad =
-                (maxUsdcAmountInWad * totalReserveUsyInWad + totalReserveUsdcInWad - 1) / totalReserveUsdcInWad;
-
-            if (usdcRequiredInWad <= maxUsdcAmountInWad) {
-                // USY is the limiting factor
-                usdcUsed = (usdcRequiredInWad + USDC_SCALE_UP - 1) / USDC_SCALE_UP; // Round up to ensure we use enough USDC
-                usyUsed = maxUsyAmountInWad; // Use the full USY amount
+            // Calculate optimal amounts maintaining current ratio
+            uint256 optimalUsyInWad = (maxUsdcAmountInWad * totalReserveUsyInWad) / totalReserveUsdcInWad;
+            if (optimalUsyInWad <= maxUsyAmountInWad) {
+                usdcUsed = _fromWadUSDC(maxUsdcAmountInWad);
+                usyUsed = optimalUsyInWad;
             } else {
-                // USDC is the limiting factor
-                // usdcUsed = _fromWadUSDC(maxUsdcAmountInWad); // Use the full USDC amount
-                usdcUsed = (maxUsdcAmountInWad + USDC_SCALE_UP - 1) / USDC_SCALE_UP;
-                usyUsed = usyRequiredInWad; // Use the required USY amount
+                uint256 optimalUsdcInWad = (maxUsyAmountInWad * totalReserveUsdcInWad) / totalReserveUsyInWad;
+                usdcUsed = _fromWadUSDC(optimalUsdcInWad);
+                usyUsed = maxUsyAmountInWad;
             }
 
-            // Calculate liquidity using the square root formula
-            uint256 lp0 = _toWadUSDC(usdcUsed) * anchorPoolLiquiditySupply / totalReserveUsdcInWad;
-            uint256 lp1 = usyUsed * anchorPoolLiquiditySupply / totalReserveUsyInWad;
-            liquidity = lp0 < lp1 ? lp0 : lp1; // Use the minimum of the two calculations
-
-            // Ensure that the liquidity is above the minimum threshold
+            // Mint sUSY in proportion to value share
+            uint256 valueAdded = _toWadUSDC(usdcUsed) + usyUsed;
+            uint256 totalValueBefore = totalReserveUsdcInWad + totalReserveUsyInWad;
+            liquidity = (valueAdded * currentTotalSupply) / totalValueBefore;
             if (liquidity < _minLiquidityReceive) revert YoloHook__InsufficientLiquidityMinted();
-
-            // Update the anchor pool state
-            // anchorPoolLiquiditySupply += liquidity; // Update the total supply of LP tokens
         }
 
-        // Call the PoolManager to unlock and execute accounting settlement
-        bytes memory data = poolManager.unlock(
+        // Execute transfers - hook receives the tokens
+        IERC20(usdc).safeTransferFrom(msg.sender, address(this), usdcUsed);
+        IERC20(address(anchor)).safeTransferFrom(msg.sender, address(this), usyUsed);
+
+        // Convert real tokens to PM claim-tokens and update reserves via unlock callback
+        poolManager.unlock(
             abi.encode(
-                CallbackData(
-                    0, abi.encode(AddLiquidityCallbackData(msg.sender, _receiver, usdcUsed, usyUsed, liquidity))
-                )
+                CallbackData({
+                    action: 0,
+                    data: abi.encode(
+                        AddLiquidityCallbackData({
+                            sender: msg.sender,
+                            receiver: _receiver,
+                            usdcUsed: usdcUsed,
+                            usyUsed: usyUsed,
+                            liquidity: liquidity
+                        })
+                    )
+                })
             )
         );
 
-        // Decode the callback data to get the actual amounts used and liquidity minted
-        (
-            address sender,
-            address receiver,
-            uint256 _actualUsdcUsed,
-            uint256 _actualUsyUsed,
-            uint256 _actualLiquidityMinted
-        ) = abi.decode(data, (address, address, uint256, uint256, uint256));
+        // Mint sUSY receipt tokens after successful settlement
+        sUSY.mint(_receiver, liquidity);
 
-        _handleRehypothecation(0);
-
-        // Emit Hook Event
-        if (anchorPoolToken0 == usdc) {
-            emit HookModifyLiquidity(
-                anchorPoolId, _receiver, int128(int256(_actualUsdcUsed)), int128(int256(_actualUsyUsed))
-            );
-        } else {
-            // anchorPoolToken0 is USY
-            emit HookModifyLiquidity(
-                anchorPoolId, _receiver, int128(int256(_actualUsyUsed)), int128(int256(_actualUsdcUsed))
-            );
-        }
-
-        return (_actualUsdcUsed, _actualUsyUsed, _actualLiquidityMinted, receiver);
+        return (usdcUsed, usyUsed, liquidity, _receiver);
     }
 
     function unlockCallback(bytes calldata _callbackData) external onlyPoolManager returns (bytes memory) {
@@ -875,21 +923,23 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         if (action == 0) {
             // CASE A: Add Liquidity
             AddLiquidityCallbackData memory data = abi.decode(callbackData.data, (AddLiquidityCallbackData));
-            address sender = data.sender;
             address receiver = data.receiver; // Receiver of LP tokens, not used in this hook
             uint256 usdcUsed = data.usdcUsed; // USDC used in raw format
             uint256 usyUsed = data.usyUsed; // USY used in raw format
             uint256 liquidity = data.liquidity; // LP tokens minted
 
-            // Pull tokens from user and update hook's claims
+            // Handle claim tokens properly
             Currency cUSDC = Currency.wrap(usdc);
             Currency cUSY = Currency.wrap(address(anchor));
 
-            // Settle = user pays tokens to PoolManager
-            cUSDC.settle(poolManager, sender, usdcUsed, false);
-            cUSY.settle(poolManager, sender, usyUsed, false);
+            // The hook already has the real tokens from addLiquidity
+            // Now deposit them to PoolManager to get claim tokens
+            
+            // Settle = hook pays real tokens to PoolManager
+            cUSDC.settle(poolManager, address(this), usdcUsed, false);
+            cUSY.settle(poolManager, address(this), usyUsed, false);
 
-            // Take = hook claims the tokens from PoolManager
+            // Take = hook receives claim tokens from PoolManager
             cUSDC.take(poolManager, address(this), usdcUsed, true);
             cUSY.take(poolManager, address(this), usyUsed, true);
 
@@ -899,17 +949,11 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             totalAnchorReserveUSDC += usdcUsed; // raw USDC (6-dec)
             totalAnchorReserveUSY += usyUsed; // USY (18-dec)
 
-            if (anchorPoolLiquiditySupply == 0) {
-                anchorPoolLPBalance[address(0)] += MINIMUM_LIQUIDITY;
-                anchorPoolLPBalance[receiver] += liquidity;
-                anchorPoolLiquiditySupply = liquidity + MINIMUM_LIQUIDITY; // Set initial liquidity supply
-            } else {
-                anchorPoolLPBalance[receiver] += liquidity;
-                anchorPoolLiquiditySupply += liquidity;
-            }
+            // Note: sUSY minting is handled in addLiquidity function, not here
+            // This callback only handles the token transfers via PoolManager
             // emit AnchorLiquidityAdded(sender, receiver, usdcUsed, usyUsed, liquidity);
 
-            return abi.encode(sender, receiver, usdcUsed, usyUsed, liquidity);
+            return abi.encode(address(this), receiver, usdcUsed, usyUsed, liquidity);
         } else if (action == 1) {
             // CASE B: Remove Liquidity
             RemoveLiquidityCallbackData memory data = abi.decode(callbackData.data, (RemoveLiquidityCallbackData));
@@ -919,9 +963,10 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             uint256 usyAmount = data.usyAmount; // USY amount to return
             uint256 liquidity = data.liquidity; // LP tokens burnt
 
-            // Update state
-            anchorPoolLPBalance[initiator] -= liquidity;
-            anchorPoolLiquiditySupply -= liquidity;
+            // Note: sUSY burning is handled in removeLiquidity function, not here
+            // This callback only handles the token transfers
+
+            // Update reserves
             totalAnchorReserveUSDC -= usdcAmount;
             totalAnchorReserveUSY -= usyAmount;
 
@@ -970,7 +1015,7 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
      * @notice  Remove liquidity from the anchor pool
      * @param   _minUSDC    Minimum USDC to receive
      * @param   _minUSY     Minimum USY to receive
-     * @param   _liquidity  Amount of LP tokens to burn
+     * @param   _liquidity  Amount of sUSY tokens to burn
      * @param   _receiver   Address to receive the USDC and USY
      */
     function removeLiquidity(uint256 _minUSDC, uint256 _minUSY, uint256 _liquidity, address _receiver)
@@ -978,43 +1023,57 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
         whenNotPaused
         returns (uint256 usdcAmount, uint256 usyAmount, uint256 liquidity, address receiver)
     {
-        // Guard clause: ensure that the liquidity burnt is greater than zero
-        if (_liquidity == 0) revert YoloHook__InvalidAddLiuidityParams();
-        // Guard Claise: check user has enough LP tokens
-        if (anchorPoolLPBalance[msg.sender] < _liquidity) revert YoloHook__InsufficientLiquidityBalance();
-        // Guard clause: ensure that the anchor pool has enough liquidity
-        if (anchorPoolLiquiditySupply == 0) revert YoloHook__InsufficientLiquidityBalance();
+        // Validation
+        require(_liquidity > 0, "Invalid liquidity amount");
+        require(_receiver != address(0), "Invalid receiver");
+        require(address(sUSY) != address(0), "sUSY not initialized");
 
-        // Calculate proportional amounts with rounding DOWN to benefit pool
-        // User gets slightly less, pool keeps the dust
-        usdcAmount = (_liquidity * totalAnchorReserveUSDC) / anchorPoolLiquiditySupply;
-        usyAmount = (_liquidity * totalAnchorReserveUSY) / anchorPoolLiquiditySupply;
+        uint256 totalSupply = sUSY.totalSupply();
+        require(totalSupply > 0, "No liquidity in pool");
+        if (sUSY.balanceOf(msg.sender) < _liquidity) revert YoloHook__InsufficientLiquidityBalance();
 
-        if (usdcAmount < _minUSDC || usyAmount < _minUSY) revert YoloHook__InsufficientAmount();
+        // Calculate proportional amounts (rounding down to benefit pool)
+        usdcAmount = (_liquidity * totalAnchorReserveUSDC) / totalSupply;
+        usyAmount = (_liquidity * totalAnchorReserveUSY) / totalSupply;
 
+        if (usdcAmount < _minUSDC) revert YoloHook__InsufficientAmount();
+        if (usyAmount < _minUSY) revert YoloHook__InsufficientAmount();
+
+        // Handle rehypothecation if needed
         _handleDehypothecation(usdcAmount);
 
-        bytes memory data = poolManager.unlock(
+        // DO NOT update reserves here - let unlockCallback do it
+        // totalAnchorReserveUSDC and totalAnchorReserveUSY will be updated in unlockCallback
+
+        // Burn sUSY tokens from user
+        sUSY.burn(msg.sender, _liquidity);
+
+        // Settle transfers via PoolManager unlock callback (action 1)
+        poolManager.unlock(
             abi.encode(
-                CallbackData(
-                    1, abi.encode(RemoveLiquidityCallbackData(msg.sender, _receiver, usdcAmount, usyAmount, _liquidity))
-                )
+                CallbackData({
+                    action: 1,
+                    data: abi.encode(
+                        RemoveLiquidityCallbackData({
+                            initiator: msg.sender,
+                            receiver: _receiver,
+                            usdcAmount: usdcAmount,
+                            usyAmount: usyAmount,
+                            liquidity: _liquidity
+                        })
+                    )
+                })
             )
         );
 
-        // Decode the callback data to get the actual amounts used and liquidity minted
-        (address initiator, address receiver_, uint256 usdcAmount_, uint256 usyAmount_, uint256 liquidity_) =
-            abi.decode(data, (address, address, uint256, uint256, uint256));
-
+        // Emit liquidity event for compatibility
         if (anchorPoolToken0 == usdc) {
-            emit HookModifyLiquidity(anchorPoolId, receiver, -int128(int256(usdcAmount_)), -int128(int256(usyAmount_)));
+            emit HookModifyLiquidity(anchorPoolId, _receiver, -int128(int256(usdcAmount)), -int128(int256(usyAmount)));
         } else {
-            // anchorPoolToken0 is USY
-            emit HookModifyLiquidity(anchorPoolId, receiver, -int128(int256(usyAmount_)), -int128(int256(usdcAmount_)));
+            emit HookModifyLiquidity(anchorPoolId, _receiver, -int128(int256(usyAmount)), -int128(int256(usdcAmount)));
         }
 
-        // Return the actual amounts and receiver
-        return (usdcAmount_, usyAmount_, liquidity_, receiver_);
+        return (usdcAmount, usyAmount, _liquidity, _receiver);
     }
 
     // ***********************//
@@ -1062,8 +1121,9 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
             }
 
             bool usdcToUsy = params.zeroForOne == (anchorPoolToken0 == usdc);
-            Currency cIn = usdcToUsy ? Currency.wrap(usdc) : Currency.wrap(address(anchor));
-            Currency cOut = usdcToUsy ? Currency.wrap(address(anchor)) : Currency.wrap(usdc);
+            // Use the pool's currencies from the PoolKey, not the raw token addresses
+            Currency cIn = params.zeroForOne ? key.currency0 : key.currency1;
+            Currency cOut = params.zeroForOne ? key.currency1 : key.currency0;
 
             uint256 rIn = usdcToUsy ? totalAnchorReserveUSDC : totalAnchorReserveUSY;
             uint256 rOut = usdcToUsy ? totalAnchorReserveUSY : totalAnchorReserveUSDC;
@@ -1094,24 +1154,23 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 nIn = gIn - f;
             }
 
-            // Update reserves
+            // Update reserves: only the net input increases reserves; fee is forwarded to treasury
             if (usdcToUsy) {
                 totalAnchorReserveUSDC = rIn + nIn;
                 totalAnchorReserveUSY = rOut - out;
-
-                // Mark USDC for rehypothecation AFTER we receive it
-                _pendingRehypoUSDC = nIn;
+                _pendingRehypoUSDC = nIn; // only net input can be rehypothecated
             } else {
                 totalAnchorReserveUSY = rIn + nIn;
                 totalAnchorReserveUSDC = rOut - out;
-
-                // Mark USDC needed for dehypothecation
                 _pendingDehypoUSDC = out;
             }
 
-            // Settlement
+            // Settlement - pull net input to hook, forward fee to treasury, and mint output to hook
             cIn.take(poolManager, address(this), nIn, true);
-            if (f > 0) cIn.take(poolManager, treasury, f, false);
+            if (f > 0) {
+                // Send fee to treasury as real tokens
+                cIn.take(poolManager, treasury, f, false);
+            }
             cOut.settle(poolManager, address(this), out, true);
 
             // Emit and return
@@ -1124,12 +1183,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 params.zeroForOne ? 0 : uint128(f)
             );
 
+            int128 delta0 = exactIn ? int128(uint128(gIn)) : -int128(uint128(out));
+            int128 delta1 = exactIn ? -int128(uint128(out)) : int128(uint128(gIn));
+            
             return (
                 this.beforeSwap.selector,
-                toBeforeSwapDelta(
-                    exactIn ? int128(uint128(gIn)) : -int128(uint128(out)),
-                    exactIn ? -int128(uint128(out)) : int128(uint128(gIn))
-                ),
+                toBeforeSwapDelta(delta0, delta1),
                 0
             );
         } else if (isSyntheticPool[poolId]) {
@@ -1178,12 +1237,12 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
                 params.zeroForOne ? 0 : uint128(f)
             );
 
+            int128 delta0 = exactIn ? int128(uint128(gIn)) : -int128(uint128(out));
+            int128 delta1 = exactIn ? -int128(uint128(out)) : int128(uint128(gIn));
+            
             return (
                 this.beforeSwap.selector,
-                toBeforeSwapDelta(
-                    exactIn ? int128(uint128(gIn)) : -int128(uint128(out)),
-                    exactIn ? -int128(uint128(out)) : int128(uint128(gIn))
-                ),
+                toBeforeSwapDelta(delta0, delta1),
                 0
             );
         } else {
@@ -1534,42 +1593,58 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
     //*************************** //
 
     /**
-     * @notice  Internal function to accrue interest for a user's position.
-     * @dev     This function changes state.
-     * @param   _pos        The position of the user from storage.
-     * @param   _rate       The interest rate to apply.
+     * @notice Get current debt amount for a position with compound interest
+     * @param _user User address
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     * @return actualDebt Current debt including compound interest
      */
-    function _accrueInterest(UserPosition storage _pos, uint256 _rate) internal {
-        if (_pos.yoloAssetMinted == 0) {
-            _pos.lastUpdatedTimeStamp = block.timestamp;
-            return;
-        }
-        uint256 dt = block.timestamp - _pos.lastUpdatedTimeStamp;
-        // simple pro-rata APR: principal * rate * dt / (1yr * PRECISION_DIVISOR)
-        _pos.accruedInterest += (_pos.yoloAssetMinted * _rate * dt) / (YEAR * PRECISION_DIVISOR);
-        _pos.lastUpdatedTimeStamp = block.timestamp;
+    function getCurrentDebt(address _user, address _collateral, address _yoloAsset)
+        public
+        view
+        returns (uint256 actualDebt)
+    {
+        UserPosition storage position = positions[_user][_collateral][_yoloAsset];
+        CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
+
+        if (position.normalizedDebtRay == 0) return 0;
+
+        // Calculate effective global index with time since last config update
+        uint256 timeDelta = block.timestamp - config.lastUpdateTimestamp;
+        uint256 effectiveIndex =
+            InterestMath.calculateEffectiveIndex(config.liquidityIndexRay, position.storedInterestRate, timeDelta);
+
+        // Actual debt = normalizedDebtRay * effectiveIndex / RAY (round UP for user obligations)
+        return divUp(position.normalizedDebtRay * effectiveIndex, RAY);
     }
 
     /**
-     * @notice  Internal function check whether user is solvent at a given state.
-     * @dev     This function changes state.
-     * @param   _pos            The position of the user from at the given timeframe & state.
-     * @param   _collateral     The collateral asset address.
-     * @param   _yoloAsset      The yolo asset address.
-     * @param   _ltv            The loan-to-value ratio to check against.
+     * @notice Check if a user position is solvent
+     * @param _user User address
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     * @param _ltv LTV ratio to check against
+     * @return solvent Whether position is solvent
      */
-    function _isSolvent(UserPosition storage _pos, address _collateral, address _yoloAsset, uint256 _ltv)
-        internal
+    function isPositionSolvent(address _user, address _collateral, address _yoloAsset, uint256 _ltv)
+        public
         view
-        returns (bool)
+        returns (bool solvent)
     {
+        UserPosition storage position = positions[_user][_collateral][_yoloAsset];
+
+        if (position.borrower == address(0)) return true; // No position
+
         uint256 collateralDecimals = IERC20Metadata(_collateral).decimals();
         uint256 yoloAssetDecimals = IERC20Metadata(_yoloAsset).decimals();
 
+        // Get current collateral value
         uint256 colVal =
-            yoloOracle.getAssetPrice(_collateral) * _pos.collateralSuppliedAmount / (10 ** collateralDecimals);
-        uint256 debtVal = yoloOracle.getAssetPrice(_yoloAsset) * (_pos.yoloAssetMinted + _pos.accruedInterest)
-            / (10 ** yoloAssetDecimals);
+            yoloOracle.getAssetPrice(_collateral) * position.collateralSuppliedAmount / (10 ** collateralDecimals);
+
+        // Get current debt with compound interest
+        uint256 currentDebt = getCurrentDebt(_user, _collateral, _yoloAsset);
+        uint256 debtVal = yoloOracle.getAssetPrice(_yoloAsset) * currentDebt / (10 ** yoloAssetDecimals);
 
         return debtVal * PRECISION_DIVISOR <= colVal * _ltv;
     }
@@ -1587,5 +1662,200 @@ contract YoloHook is BaseHook, ReentrancyGuard, Ownable, Pausable {
 
         assetToBurn = address(0);
         amountToBurn = 0;
+    }
+
+    // ========================
+    // sUSY INTEGRATION FUNCTIONS
+    // ========================
+
+    /**
+     * @notice Set the sUSY token contract address
+     * @param _sUSYAddress Address of the deployed sUSY token
+     */
+    function setSUSYToken(address _sUSYAddress) external onlyOwner {
+        if (_sUSYAddress == address(0)) revert YoloHook__ZeroAddress();
+        sUSY = IStakedYoloUSD(_sUSYAddress);
+        emit sUSYDeployed(_sUSYAddress);
+    }
+
+    /**
+     * @notice Get total USD value of anchor pool reserves (for sUSY exchange rate)
+     * @return totalValue Combined USD value of USDC + USY reserves (18 decimals)
+     */
+    function getTotalAnchorPoolValue() external view returns (uint256 totalValue) {
+        // Convert USDC (6 decimals) to 18 decimals (treat as $1)
+        uint256 usdcValue18 = _toWadUSDC(totalAnchorReserveUSDC);
+        // USY is 18 decimals and treated as $1 in the stable anchor pool
+        uint256 usyValue18 = totalAnchorReserveUSY;
+        return usdcValue18 + usyValue18;
+    }
+
+    // ========================
+    // EXPIRATION MANAGEMENT FUNCTIONS
+    // ========================
+
+    /**
+     * @notice Configure expiration settings for a collateral-asset pair
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     * @param _isExpirable Whether positions in this pair expire
+     * @param _expirePeriod Duration in seconds (e.g., 365 days)
+     */
+    function setExpirationConfig(address _collateral, address _yoloAsset, bool _isExpirable, uint256 _expirePeriod)
+        external
+        onlyOwner
+    {
+        if (!isWhiteListedCollateral[_collateral]) revert YoloHook__CollateralNotRecognized();
+        if (!isYoloAsset[_yoloAsset]) revert YoloHook__NotYoloAsset();
+
+        CollateralToYoloAssetConfiguration storage config = pairConfigs[_collateral][_yoloAsset];
+        if (config.collateral == address(0)) revert YoloHook__InvalidPair();
+
+        config.isExpirable = _isExpirable;
+        config.expirePeriod = _expirePeriod;
+
+        emit ExpirationConfigUpdated(_collateral, _yoloAsset, _isExpirable, _expirePeriod);
+    }
+
+    /**
+     * @notice Renew an expired position (delegatecall to SyntheticAssetLogic)
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     */
+    function renewPosition(address _collateral, address _yoloAsset) external nonReentrant whenNotPaused {
+        (bool success, bytes memory result) = syntheticAssetLogic.delegatecall(
+            abi.encodeWithSignature("renewPosition(address,address)", _collateral, _yoloAsset)
+        );
+        if (!success) {
+            if (result.length > 0) {
+                assembly {
+                    revert(add(32, result), mload(result))
+                }
+            } else {
+                revert("Renewal failed");
+            }
+        }
+    }
+
+    /**
+     * @notice Check if a position is expired
+     * @param _user User address
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     * @return expired Whether the position is expired
+     * @return expiryTime The expiry timestamp (0 if non-expirable)
+     */
+    function getPositionExpiration(address _user, address _collateral, address _yoloAsset)
+        external
+        view
+        returns (bool expired, uint256 expiryTime)
+    {
+        UserPosition storage position = positions[_user][_collateral][_yoloAsset];
+
+        if (position.borrower == address(0)) {
+            return (false, 0); // No position exists
+        }
+
+        expiryTime = position.expiryTimestamp;
+        expired = (expiryTime > 0 && block.timestamp >= expiryTime);
+    }
+
+    // ========================
+    // HELPER FUNCTIONS
+    // ========================
+
+    /**
+     * @notice Helper function for ceiling division (rounds up)
+     * @dev Used to ensure protocol always rounds in its favor for user obligations
+     * @param a Numerator
+     * @param b Denominator
+     * @return Result rounded up
+     */
+    function divUp(uint256 a, uint256 b) internal pure returns (uint256) {
+        return (a + b - 1) / b;
+    }
+
+    /**
+     * @notice Update global liquidity index with compound interest
+     * @param config The pair configuration to update
+     * @param rateBps Interest rate in basis points
+     */
+    function _updateGlobalLiquidityIndex(CollateralToYoloAssetConfiguration storage config, uint256 rateBps) internal {
+        // Initialize check for safety
+        if (config.liquidityIndexRay == 0) {
+            config.liquidityIndexRay = RAY;
+            config.lastUpdateTimestamp = block.timestamp;
+            return;
+        }
+
+        uint256 timeDelta = block.timestamp - config.lastUpdateTimestamp;
+        if (timeDelta == 0) return;
+
+        uint256 oldIndex = config.liquidityIndexRay;
+        config.liquidityIndexRay = InterestMath.calculateLinearInterest(config.liquidityIndexRay, rateBps, timeDelta);
+        config.lastUpdateTimestamp = block.timestamp;
+
+        // Emit event for transparency
+        emit LiquidityIndexUpdated(config.collateral, config.yoloAsset, oldIndex, config.liquidityIndexRay);
+    }
+
+    // ========================
+    // VIEW FUNCTIONS FOR POSITION HEALTH
+    // ========================
+
+    /**
+     * @notice Get comprehensive position health information
+     * @param _user User address
+     * @param _collateral Collateral asset address
+     * @param _yoloAsset Yolo asset address
+     * @return currentDebt Current debt with accrued interest
+     * @return currentPrincipal Current principal amount
+     * @return accruedInterest Interest that has accrued
+     * @return healthFactor Position health factor (1e18 = 100%)
+     * @return isExpired Whether the position has expired
+     */
+    function getPositionHealth(address _user, address _collateral, address _yoloAsset)
+        external
+        view
+        returns (
+            uint256 currentDebt,
+            uint256 currentPrincipal,
+            uint256 accruedInterest,
+            uint256 healthFactor,
+            bool isExpired
+        )
+    {
+        UserPosition storage pos = positions[_user][_collateral][_yoloAsset];
+        CollateralToYoloAssetConfiguration storage cfg = pairConfigs[_collateral][_yoloAsset];
+
+        if (pos.borrower == address(0)) {
+            return (0, 0, 0, type(uint256).max, false); // No position
+        }
+
+        // Calculate effective global index without storage writes
+        uint256 timeDelta = block.timestamp - cfg.lastUpdateTimestamp;
+        uint256 effectiveIndex = InterestMath.calculateLinearInterest(
+            cfg.liquidityIndexRay,
+            pos.storedInterestRate, // User's locked rate
+            timeDelta
+        );
+
+        // Debt accrues with index; principal remains constant
+        currentDebt = (pos.normalizedDebtRay * effectiveIndex) / RAY;
+        currentPrincipal = (pos.normalizedPrincipalRay * pos.userLiquidityIndexRay) / RAY;
+        accruedInterest = currentDebt - currentPrincipal;
+
+        // Calculate health factor
+        uint256 collateralDecimals = IERC20Metadata(_collateral).decimals();
+        uint256 yoloAssetDecimals = IERC20Metadata(_yoloAsset).decimals();
+
+        uint256 collateralValue =
+            yoloOracle.getAssetPrice(_collateral) * pos.collateralSuppliedAmount / (10 ** collateralDecimals);
+        uint256 debtValue = yoloOracle.getAssetPrice(_yoloAsset) * currentDebt / (10 ** yoloAssetDecimals);
+
+        healthFactor = debtValue > 0 ? (collateralValue * cfg.ltv) / (debtValue * PRECISION_DIVISOR) : type(uint256).max;
+
+        // Check expiration
+        isExpired = cfg.isExpirable && pos.expiryTimestamp > 0 && block.timestamp >= pos.expiryTimestamp;
     }
 }
