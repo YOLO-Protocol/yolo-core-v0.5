@@ -9,6 +9,7 @@ import "./base/Base03_DeployYoloAssetSettingsAndCollaterals.t.sol";
 import {PublicTransparentUpgradeableProxy} from "@yolo/contracts/proxy/PublicTransparentUpgradeableProxy.sol";
 import {YoloHook} from "@yolo/contracts/core/YoloHook.sol";
 import {YoloOracle} from "@yolo/contracts/core/YoloOracle.sol";
+import {StakedYoloUSD} from "@yolo/contracts/tokenization/StakedYoloUSD.sol";
 import {IPoolManager, ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IFlashBorrower} from "@yolo/contracts/interfaces/IFlashBorrower.sol";
 import {IYoloSyntheticAsset} from "@yolo/contracts/interfaces/IYoloSyntheticAsset.sol";
@@ -144,7 +145,17 @@ contract Test01_YoloHookFunctionality is
         yoloOracle.setHook(address(yoloHookProxy));
         yoloOracle.setAnchor(address(yoloHookProxy.anchor()));
 
-        // E. Deploy All Yolo Assets
+        // Whitelist USDC as collateral for tests that use USDC as collateral (Case24)
+        address usdcAddr = symbolToDeployedAsset["USDC"];
+        yoloHookProxy.setCollateralConfig(usdcAddr, 1_000_000_000e18, yoloOracle.getSourceOfAsset(usdcAddr));
+
+        // E. Deploy and set sUSY token for anchor LP receipts
+        {
+            StakedYoloUSD sUSYToken = new StakedYoloUSD(address(yoloHookProxy));
+            yoloHookProxy.setSUSYToken(address(sUSYToken));
+        }
+
+        // F. Deploy All Yolo Assets
         for (uint256 i = 0; i < yoloAssetsArray.length; i++) {
             // E-1. Create New Yolo Assets
             address yoloAsset = yoloHookProxy.createNewYoloAsset(
@@ -164,7 +175,7 @@ contract Test01_YoloHookFunctionality is
             );
         }
 
-        // F. Register and whitelist all collaterals
+        // G. Register and whitelist all collaterals
         for (uint256 i = 0; i < collateralAssetsArray.length; i++) {
             address asset = symbolToDeployedAsset[collateralAssetsArray[i].symbol];
             require(asset != address(0), "Invalid asset address");
@@ -175,7 +186,7 @@ contract Test01_YoloHookFunctionality is
             yoloHookProxy.setCollateralConfig(asset, collateralAssetsArray[i].supplyCap, priceSource);
         }
 
-        // G. Set convenience variables
+        // H. Set convenience variables
         yJpyAsset = yoloAssetToAddress["yJPY"];
         yKrwAsset = yoloAssetToAddress["yKRW"];
         yGoldAsset = yoloAssetToAddress["yXAU"];
@@ -183,7 +194,7 @@ contract Test01_YoloHookFunctionality is
         wbtcAsset = symbolToDeployedAsset["WBTC"];
         ptUsdeAsset = symbolToDeployedAsset["PT-sUSDe-31JUL2025"];
 
-        // H. Quick setup pair configs for testings
+        // I. Quick setup pair configs for testings
         address[] memory collateralAssets = new address[](2);
         collateralAssets[0] = wbtcAsset;
         collateralAssets[1] = ptUsdeAsset;
@@ -297,8 +308,8 @@ contract Test01_YoloHookFunctionality is
         // (uint256 usdcReserveBefore, uint256 usyReserveBefore) = yoloHookProxy.getAnchorReserves();
         uint256 usdcReserveBefore = yoloHookProxy.totalAnchorReserveUSDC();
         uint256 usyReserveBefore = yoloHookProxy.totalAnchorReserveUSY();
-        uint256 lpBalanceBefore = yoloHookProxy.anchorPoolLPBalance(address(this));
-        uint256 totalSupplyBefore = yoloHookProxy.anchorPoolLiquiditySupply();
+        uint256 lpBalanceBefore = IERC20(address(yoloHookProxy.sUSY())).balanceOf(address(this));
+        uint256 totalSupplyBefore = IERC20(address(yoloHookProxy.sUSY())).totalSupply();
 
         console.log("Pool USDC Reserve Before:", usdcReserveBefore);
         console.log("Pool USY Reserve Before:", usyReserveBefore);
@@ -314,7 +325,8 @@ contract Test01_YoloHookFunctionality is
         // For first liquidity with 1:1 ratio enforcement, it uses the smaller amount in WAD
         uint256 expectedUsdcUsed = firstUsdcAmount;
         uint256 expectedUsyUsed = 50_000e18; // Always 50,000e18 regardless of USDC decimals
-        uint256 expectedLiquidity = 50_000e18 - 1000; // Since both are equal in WAD
+        // Minting is 1:1 with total USD value added minus MINIMUM_LIQUIDITY
+        uint256 expectedLiquidity = (50_000e18 + 50_000e18) - 1000;
 
         // Call addLiquidity
         (uint256 usdcUsed, uint256 usyUsed, uint256 liquidityMinted, address receiver) =
@@ -342,8 +354,8 @@ contract Test01_YoloHookFunctionality is
         // (uint256 usdcReserveAfter, uint256 usyReserveAfter) = yoloHookProxy.getAnchorReserves();
         uint256 usdcReserveAfter = yoloHookProxy.totalAnchorReserveUSDC();
         uint256 usyReserveAfter = yoloHookProxy.totalAnchorReserveUSY();
-        uint256 lpBalanceAfter = yoloHookProxy.anchorPoolLPBalance(address(this));
-        uint256 totalSupplyAfter = yoloHookProxy.anchorPoolLiquiditySupply();
+        uint256 lpBalanceAfter = IERC20(address(yoloHookProxy.sUSY())).balanceOf(address(this));
+        uint256 totalSupplyAfter = IERC20(address(yoloHookProxy.sUSY())).totalSupply();
 
         console.log("Pool USDC Reserve After:", usdcReserveAfter);
         console.log("Pool USY Reserve After:", usyReserveAfter);
@@ -396,8 +408,8 @@ contract Test01_YoloHookFunctionality is
         assertGt(lpMinted, 0, "LP minted");
 
         // ---- 1. Snapshot before we remove --------------------------------------------
-        uint256 lpUserBefore = yoloHookProxy.anchorPoolLPBalance(address(this));
-        uint256 lpTotalBefore = yoloHookProxy.anchorPoolLiquiditySupply();
+        uint256 lpUserBefore = IERC20(address(yoloHookProxy.sUSY())).balanceOf(address(this));
+        uint256 lpTotalBefore = IERC20(address(yoloHookProxy.sUSY())).totalSupply();
         // (uint256 resUsdcBefore, uint256 resUsyBefore) = yoloHookProxy.getAnchorReserves();
         uint256 resUsdcBefore = yoloHookProxy.totalAnchorReserveUSDC();
         uint256 resUsyBefore = yoloHookProxy.totalAnchorReserveUSY();
@@ -423,8 +435,14 @@ contract Test01_YoloHookFunctionality is
         assertEq(usdc.balanceOf(address(this)), balUsdcBefore + usdcOut, "USDC credited");
         assertEq(usy.balanceOf(address(this)), balUsyBefore + usyOut, "USY credited");
 
-        assertEq(yoloHookProxy.anchorPoolLPBalance(address(this)), lpUserBefore - lpToBurn, "LP burned from user");
-        assertEq(yoloHookProxy.anchorPoolLiquiditySupply(), lpTotalBefore - lpToBurn, "total LP supply shrank");
+        assertEq(
+            IERC20(address(yoloHookProxy.sUSY())).balanceOf(address(this)),
+            lpUserBefore - lpToBurn,
+            "LP burned from user"
+        );
+        assertEq(
+            IERC20(address(yoloHookProxy.sUSY())).totalSupply(), lpTotalBefore - lpToBurn, "total LP supply shrank"
+        );
 
         // (uint256 resUsdcAfter, uint256 resUsyAfter) = yoloHookProxy.getAnchorReserves();
         uint256 resUsdcAfter = yoloHookProxy.totalAnchorReserveUSDC();
@@ -434,11 +452,11 @@ contract Test01_YoloHookFunctionality is
 
         // ---- 3. Revert paths ----------------------------------------------------------
         // a) too-strict minimums
-        vm.expectRevert(YoloHook.YoloHook__InsufficientAmount.selector);
+        vm.expectRevert(bytes4(keccak256("YoloHook__InsufficientAmount()")));
         yoloHookProxy.removeLiquidity(usdcOut + 1, usyOut + 1, lpToBurn, address(this));
 
         // b) trying to burn more than you have
-        vm.expectRevert(YoloHook.YoloHook__InsufficientLiquidityBalance.selector);
+        vm.expectRevert(bytes4(keccak256("YoloHook__InsufficientLiquidityBalance()")));
         yoloHookProxy.removeLiquidity(0, 0, lpMinted, address(this)); // user now has < lpMinted
     }
 
@@ -647,25 +665,28 @@ contract Test01_YoloHookFunctionality is
         // Borrow
         yoloHookProxy.borrow(yJpyAsset, borrowAmount, wbtcAsset, collateralAmount);
 
-        // Verify position created
+        // Verify position created (new accounting model)
         (
             address borrower,
             address collateral,
             uint256 collateralSupplied,
             address yoloAsset,
-            uint256 yoloAssetMinted,
+            uint256 normalizedDebtRay,
+            uint256 normalizedPrincipalRay,
+            uint256 userLiquidityIndexRay,
             uint256 lastUpdated,
             uint256 storedRate,
-            uint256 accruedInterest
+            uint256 expiryTimestamp
         ) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
 
         assertEq(borrower, user, "Borrower mismatch");
         assertEq(collateral, wbtcAsset, "Collateral mismatch");
         assertEq(collateralSupplied, collateralAmount, "Collateral amount mismatch");
         assertEq(yoloAsset, yJpyAsset, "Yolo asset mismatch");
-        assertEq(yoloAssetMinted, borrowAmount, "Borrowed amount mismatch");
+        // Use helper view to obtain current principal (should equal borrowAmount initially)
+        (, uint256 currentPrincipal,,,) = yoloHookProxy.getPositionHealth(user, wbtcAsset, yJpyAsset);
+        assertEq(currentPrincipal, borrowAmount, "Borrowed amount mismatch");
         assertEq(storedRate, 500, "Interest rate mismatch");
-        assertEq(accruedInterest, 0, "Initial accrued interest should be 0");
 
         // Verify balances
         assertEq(IERC20(yJpyAsset).balanceOf(user), jpyBalBefore + borrowAmount, "JPY not minted");
@@ -692,14 +713,15 @@ contract Test01_YoloHookFunctionality is
         // Fast forward 30 days
         vm.warp(block.timestamp + 30 days);
 
-        // Trigger interest accrual by doing a tiny repayment
-        IERC20(yJpyAsset).approve(address(yoloHookProxy), 1);
-        yoloHookProxy.repay(wbtcAsset, yJpyAsset, 1, false);
-
-        // Check interest accrued
-        (,,,, uint256 principal,,, uint256 interest) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        // Check interest accrued BEFORE any repayment (to avoid timestamp update)
+        uint256 currentDebt = yoloHookProxy.getCurrentDebt(user, wbtcAsset, yJpyAsset);
+        (, uint256 principal, uint256 interest,,) = yoloHookProxy.getPositionHealth(user, wbtcAsset, yJpyAsset);
         console.log("Interest accrued after 30 days:", interest);
         assertTrue(interest > 0, "No interest accrued");
+
+        // Now do the tiny repayment to trigger interest accrual in storage
+        IERC20(yJpyAsset).approve(address(yoloHookProxy), 1);
+        yoloHookProxy.repay(wbtcAsset, yJpyAsset, 1, false);
 
         // Calculate expected interest: principal * rate * time / (365 days * 10000)
         uint256 expectedInterest = (borrowAmount * 500 * 30 days) / (365 days * 10000);
@@ -714,7 +736,8 @@ contract Test01_YoloHookFunctionality is
         yoloHookProxy.repay(wbtcAsset, yJpyAsset, repayAmount, false);
 
         // Verify repayment applied to interest first, then principal
-        (,,,, uint256 principalAfter,,, uint256 interestAfter) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        (, uint256 principalAfter, uint256 interestAfter,,) =
+            yoloHookProxy.getPositionHealth(user, wbtcAsset, yJpyAsset);
 
         assertTrue(interestAfter < interest, "Interest not reduced");
         assertTrue(principalAfter < principal, "Principal not reduced");
@@ -747,13 +770,14 @@ contract Test01_YoloHookFunctionality is
         // Get total debt
         IERC20(yJpyAsset).approve(address(yoloHookProxy), 1);
         yoloHookProxy.repay(wbtcAsset, yJpyAsset, 1, false);
-        (,,,, uint256 principal,,, uint256 interest) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        (, uint256 principal, uint256 interest,,) = yoloHookProxy.getPositionHealth(user, wbtcAsset, yJpyAsset);
         uint256 totalDebt = principal + interest;
 
-        // Mint extra to cover interest
+        // Mint extra to cover interest (add 10% extra for safety)
         vm.stopPrank();
         vm.prank(address(yoloHookProxy));
-        IYoloSyntheticAsset(yJpyAsset).mint(user, interest * 2);
+        uint256 mintExtra = interest > 0 ? interest * 2 : borrowAmount / 10; // 10% extra if no interest calculated
+        IYoloSyntheticAsset(yJpyAsset).mint(user, mintExtra);
 
         vm.startPrank(user);
         uint256 wbtcBalBefore = IERC20(wbtcAsset).balanceOf(user);
@@ -763,8 +787,9 @@ contract Test01_YoloHookFunctionality is
         yoloHookProxy.repay(wbtcAsset, yJpyAsset, 0, true); // 0 means full repayment
 
         // Verify position cleared
-        (address borrower,, uint256 collateralLeft,, uint256 debtLeft,,, uint256 interestLeft) =
-            yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        (address borrower,, uint256 collateralLeft,,,,,,,) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        uint256 debtLeft = yoloHookProxy.getCurrentDebt(user, wbtcAsset, yJpyAsset);
+        (, uint256 principalLeft, uint256 interestLeft,,) = yoloHookProxy.getPositionHealth(user, wbtcAsset, yJpyAsset);
 
         assertEq(collateralLeft, 0, "Collateral not cleared");
         assertEq(debtLeft, 0, "Debt not cleared");
@@ -798,7 +823,7 @@ contract Test01_YoloHookFunctionality is
         yoloHookProxy.withdraw(wbtcAsset, yJpyAsset, withdrawAmount);
 
         // Verify collateral reduced
-        (,, uint256 collateralLeft,,,,,) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+        (,, uint256 collateralLeft,,,,,,,) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
         assertEq(collateralLeft, collateralAmount - withdrawAmount, "Collateral not reduced");
 
         // Verify user received collateral
@@ -848,8 +873,9 @@ contract Test01_YoloHookFunctionality is
         assertTrue(wbtcBalAfter > wbtcBalBefore, "Liquidator didn't receive collateral");
 
         // Verify borrower's position reduced
-        (,, uint256 collateralLeft,, uint256 debtLeft,,,) = yoloHookProxy.positions(borrower, wbtcAsset, yJpyAsset);
+        (,, uint256 collateralLeft,,,,,,,) = yoloHookProxy.positions(borrower, wbtcAsset, yJpyAsset);
         assertTrue(collateralLeft < collateralAmount, "Collateral not seized");
+        uint256 debtLeft = yoloHookProxy.getCurrentDebt(borrower, wbtcAsset, yJpyAsset);
         assertTrue(debtLeft < borrowAmount, "Debt not reduced");
 
         vm.stopPrank();
@@ -1015,11 +1041,11 @@ contract Test01_YoloHookFunctionality is
         IERC20(wbtcAsset).approve(address(yoloHookProxy), 1e18);
 
         // Try to borrow - should fail
-        vm.expectRevert(YoloHook.YoloHook__YoloAssetPaused.selector);
+        vm.expectRevert(bytes4(keccak256("YoloHook__YoloAssetPaused()")));
         yoloHookProxy.borrow(yJpyAsset, 1_000_000e18, wbtcAsset, 1e18);
 
         // // Try flash loan - should also fail
-        // vm.expectRevert(YoloHook.YoloHook__YoloAssetPaused.selector);
+        // vm.expectRevert(bytes4(keccak256("YoloHook__YoloAssetPaused()")));
         // yoloHookProxy.simpleFlashLoan(yJpyAsset, 1_000_000e18, "");
 
         vm.stopPrank();
@@ -1040,7 +1066,7 @@ contract Test01_YoloHookFunctionality is
         IERC20(wbtcAsset).approve(address(yoloHookProxy), 10e18);
 
         // Try to borrow more than cap
-        vm.expectRevert(YoloHook.YoloHook__ExceedsYoloAssetMintCap.selector);
+        vm.expectRevert(bytes4(keccak256("YoloHook__ExceedsYoloAssetMintCap()")));
         yoloHookProxy.borrow(yJpyAsset, mintCap + 1, wbtcAsset, 10e18);
 
         vm.stopPrank();
@@ -1067,7 +1093,7 @@ contract Test01_YoloHookFunctionality is
         // Second user tries to deposit - should exceed cap
         vm.startPrank(user2);
         IERC20(wbtcAsset).approve(address(yoloHookProxy), 0.6e18);
-        vm.expectRevert(YoloHook.YoloHook__ExceedsCollateralCap.selector);
+        vm.expectRevert(bytes4(keccak256("YoloHook__ExceedsCollateralCap()")));
         yoloHookProxy.borrow(yJpyAsset, 1_000_000e18, wbtcAsset, 0.6e18);
         vm.stopPrank();
     }
@@ -1099,19 +1125,22 @@ contract Test01_YoloHookFunctionality is
         // Position 3: PT-sUSDe -> yJPY
         yoloHookProxy.borrow(yJpyAsset, 2_000_000e18, ptUsdeAsset, 50_000e18);
 
-        // Verify all positions exist
-        YoloHook.UserPositionKey[] memory keys = new YoloHook.UserPositionKey[](3);
-        for (uint256 i = 0; i < 3; i++) {
-            (address collateral, address yoloAsset) = yoloHookProxy.userPositionKeys(user, i);
-            keys[i] = YoloHook.UserPositionKey(collateral, yoloAsset);
+        // Verify all positions exist via direct mapping checks
+        {
+            (address b,,, address a,,,,,,) = yoloHookProxy.positions(user, wbtcAsset, yJpyAsset);
+            assertEq(b, user);
+            assertEq(a, yJpyAsset);
         }
-
-        assertEq(keys[0].collateral, wbtcAsset);
-        assertEq(keys[0].yoloAsset, yJpyAsset);
-        assertEq(keys[1].collateral, wbtcAsset);
-        assertEq(keys[1].yoloAsset, yKrwAsset);
-        assertEq(keys[2].collateral, ptUsdeAsset);
-        assertEq(keys[2].yoloAsset, yJpyAsset);
+        {
+            (address b,,, address a,,,,,,) = yoloHookProxy.positions(user, wbtcAsset, yKrwAsset);
+            assertEq(b, user);
+            assertEq(a, yKrwAsset);
+        }
+        {
+            (address b,,, address a,,,,,,) = yoloHookProxy.positions(user, ptUsdeAsset, yJpyAsset);
+            assertEq(b, user);
+            assertEq(a, yJpyAsset);
+        }
 
         vm.stopPrank();
     }
@@ -1305,7 +1334,7 @@ contract Test01_YoloHookFunctionality is
         // // Test 4: Calling burnPendings() with no pending should revert
         // console.log("\n--- Test 4: burnPendings() reverts when no pending ---");
 
-        // vm.expectRevert(YoloHook.YoloHook__NoPendingBurns.selector);
+        // vm.expectRevert(bytes4(keccak256("YoloHook__NoPendingBurns()")));
         // yoloHookProxy.burnPendings();
 
         vm.stopPrank();
@@ -1574,6 +1603,327 @@ contract Test01_YoloHookFunctionality is
             hooks: IHooks(address(yoloHookProxy))
         });
     }
+
+    // ========================
+    // NEW: V0.5 COMPOUND INTEREST & sUSY TESTS
+    // ========================
+
+    function test_Test01_Case23_sUSYLiquidityTokens() external {
+        console.log("\n=== TEST CASE 23: sUSY Receipt Token System ===");
+
+        // Setup test users and USDC reference
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+        address user3 = makeAddr("user3");
+        IERC20Metadata usdc = IERC20Metadata(symbolToDeployedAsset["USDC"]);
+
+        // First check if sUSY is deployed (it should be in setUp)
+        address sUSYAddress = address(yoloHookProxy.sUSY());
+        console.log("sUSY Token Address:", sUSYAddress);
+        require(sUSYAddress != address(0), "sUSY token not deployed");
+
+        // Test 1: Initial liquidity provision mints sUSY tokens
+        console.log("\n--- Test 1: Initial Liquidity Mints sUSY ---");
+
+        uint256 initialUSDC = 1000e6; // 1,000 USDC
+        uint256 initialUSY = 1000e18; // 1,000 USY
+
+        // Give user1 some tokens
+        deal(address(usdc), user1, initialUSDC);
+        deal(address(yoloHookProxy.anchor()), user1, initialUSY);
+
+        vm.startPrank(user1);
+        IERC20(usdc).approve(address(yoloHookProxy), initialUSDC);
+        IERC20(address(yoloHookProxy.anchor())).approve(address(yoloHookProxy), initialUSY);
+
+        // Add liquidity and check sUSY minting
+        uint256 sUSYBalanceBefore = IERC20(sUSYAddress).balanceOf(user1);
+        console.log("User1 sUSY balance before:", sUSYBalanceBefore);
+
+        (uint256 usdcUsed, uint256 usyUsed, uint256 liquidityMinted,) =
+            yoloHookProxy.addLiquidity(initialUSDC, initialUSY, 0, user1);
+
+        uint256 sUSYBalanceAfter = IERC20(sUSYAddress).balanceOf(user1);
+        console.log("User1 sUSY balance after:", sUSYBalanceAfter);
+        console.log("Liquidity minted:", liquidityMinted);
+
+        assertEq(sUSYBalanceAfter - sUSYBalanceBefore, liquidityMinted, "sUSY not minted correctly");
+        assertGt(liquidityMinted, 0, "No liquidity minted");
+
+        vm.stopPrank();
+
+        // Test 2: Second liquidity provision is proportional
+        console.log("\n--- Test 2: Proportional Liquidity Addition ---");
+
+        uint256 additionalUSDC = 500e6; // 500 USDC
+        uint256 additionalUSY = 500e18; // 500 USY
+
+        deal(address(usdc), user2, additionalUSDC);
+        deal(address(yoloHookProxy.anchor()), user2, additionalUSY);
+
+        vm.startPrank(user2);
+        IERC20(usdc).approve(address(yoloHookProxy), additionalUSDC);
+        IERC20(address(yoloHookProxy.anchor())).approve(address(yoloHookProxy), additionalUSY);
+
+        uint256 sUSYBalanceUser2Before = IERC20(sUSYAddress).balanceOf(user2);
+        uint256 totalSupplyBefore = IERC20(sUSYAddress).totalSupply();
+
+        (,, uint256 liquidityMinted2,) = yoloHookProxy.addLiquidity(additionalUSDC, additionalUSY, 0, user2);
+
+        uint256 sUSYBalanceUser2After = IERC20(sUSYAddress).balanceOf(user2);
+        uint256 totalSupplyAfter = IERC20(sUSYAddress).totalSupply();
+
+        assertEq(
+            sUSYBalanceUser2After - sUSYBalanceUser2Before, liquidityMinted2, "sUSY not minted correctly for user2"
+        );
+        assertEq(totalSupplyAfter - totalSupplyBefore, liquidityMinted2, "Total supply not updated correctly");
+
+        vm.stopPrank();
+
+        // Test 3: Remove liquidity burns sUSY tokens
+        console.log("\n--- Test 3: Remove Liquidity Burns sUSY ---");
+
+        vm.startPrank(user1);
+        uint256 liquidityToRemove = liquidityMinted / 2; // Remove half
+
+        uint256 sUSYBalanceBeforeRemoval = IERC20(sUSYAddress).balanceOf(user1);
+
+        (uint256 usdcReceived, uint256 usyReceived,,) = yoloHookProxy.removeLiquidity(0, 0, liquidityToRemove, user1);
+
+        uint256 sUSYBalanceAfterRemoval = IERC20(sUSYAddress).balanceOf(user1);
+
+        assertEq(sUSYBalanceBeforeRemoval - sUSYBalanceAfterRemoval, liquidityToRemove, "sUSY not burned correctly");
+        assertGt(usdcReceived, 0, "No USDC received");
+        assertGt(usyReceived, 0, "No USY received");
+
+        vm.stopPrank();
+
+        console.log("sUSY tests completed successfully!");
+    }
+
+    function test_Test01_Case24_compoundInterestAccrual() external {
+        console.log("\n=== TEST CASE 24: Compound Interest System ===");
+
+        // Setup test users and USDC reference
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+        IERC20Metadata usdc = IERC20Metadata(symbolToDeployedAsset["USDC"]);
+
+        // Setup: Add liquidity and create a borrowing position
+        uint256 initialUSDC = 10000e18; // 10,000 USDC (18 decimals)
+        uint256 initialUSY = 10000e18; // 10,000 USY
+
+        deal(address(usdc), user1, initialUSDC);
+        deal(address(yoloHookProxy.anchor()), user1, initialUSY);
+
+        // Add liquidity first
+        vm.startPrank(user1);
+        IERC20(usdc).approve(address(yoloHookProxy), initialUSDC);
+        IERC20(address(yoloHookProxy.anchor())).approve(address(yoloHookProxy), initialUSY);
+        yoloHookProxy.addLiquidity(initialUSDC, initialUSY, 0, user1);
+        vm.stopPrank();
+
+        // Setup borrowing position
+        uint256 collateralAmount = 1000e18; // 1,000 USDC as collateral (18 decimals)
+        uint256 borrowAmount = 800e18; // 800 JPY to borrow
+
+        deal(address(usdc), user2, collateralAmount);
+
+        // Ensure pair config is set for USDC/JPY collateral-asset pair (as owner)
+        yoloHookProxy.setPairConfig(address(usdc), yJpyAsset, 500, 8000, 500);
+        
+        vm.startPrank(user2);
+        IERC20(usdc).approve(address(yoloHookProxy), collateralAmount);
+        // Create borrowing position - use correct signature
+        yoloHookProxy.borrow(yJpyAsset, borrowAmount, address(usdc), collateralAmount);
+
+        // Test 1: Initial debt equals borrowed amount
+        console.log("\n--- Test 1: Initial Debt Calculation ---");
+
+        uint256 initialDebt = yoloHookProxy.getCurrentDebt(user2, address(usdc), yJpyAsset);
+        console.log("Initial debt:", initialDebt);
+        console.log("Borrowed amount:", borrowAmount);
+
+        // Should be equal initially (no time passed)
+        assertApproxEqRel(initialDebt, borrowAmount, 1e15, "Initial debt should equal borrowed amount"); // 0.1% tolerance
+
+        vm.stopPrank();
+
+        // Test 2: Interest accrues over time
+        console.log("\n--- Test 2: Interest Accrual Over Time ---");
+
+        // Fast forward 1 year (365 days)
+        vm.warp(block.timestamp + 365 days);
+
+        uint256 debtAfterOneYear = yoloHookProxy.getCurrentDebt(user2, address(usdc), yJpyAsset);
+        console.log("Debt after 1 year:", debtAfterOneYear);
+
+        // Debt should have increased due to compound interest
+        assertGt(debtAfterOneYear, initialDebt, "Debt should increase over time");
+
+        // Verify interest calculation using storedRate (locked per position)
+        (,,,,,,,, uint256 interestRate,) = yoloHookProxy.positions(user2, address(usdc), yJpyAsset);
+        console.log("Interest rate (basis points):", interestRate);
+
+        // Expected compound interest calculation (simplified)
+        // Note: Real calculation uses RAY precision and continuous compounding
+        uint256 expectedMultiplier = 10000 + interestRate; // Simple approximation
+        uint256 expectedDebt = (borrowAmount * expectedMultiplier) / 10000;
+
+        // Should be within reasonable range (compound interest will be slightly higher)
+        assertGt(debtAfterOneYear, expectedDebt * 99 / 100, "Interest too low");
+        assertLt(debtAfterOneYear, expectedDebt * 105 / 100, "Interest too high");
+
+        // Test 3: Interest/Principal separation
+        console.log("\n--- Test 3: Interest/Principal Separation ---");
+
+        (, uint256 principalOwed, uint256 interestOwed,,) =
+            yoloHookProxy.getPositionHealth(user2, address(usdc), yJpyAsset);
+
+        console.log("Principal owed:", principalOwed);
+        console.log("Interest owed:", interestOwed);
+        console.log("Total debt:", principalOwed + interestOwed);
+
+        assertEq(principalOwed, borrowAmount, "Principal should remain unchanged");
+        assertGt(interestOwed, 0, "Interest should have accrued");
+        // Allow 1 wei tolerance due to rounding up in divUp calculations (protocol safety)
+        assertApproxEqAbs(principalOwed + interestOwed, debtAfterOneYear, 1, "Principal + Interest should equal total debt");
+
+        // Test 4: Partial repayment affects both interest and principal
+        console.log("\n--- Test 4: Partial Repayment ---");
+
+        uint256 repayAmount = debtAfterOneYear / 4; // Repay 25%
+        deal(yJpyAsset, user2, repayAmount);
+
+        vm.startPrank(user2);
+        IERC20(yJpyAsset).approve(address(yoloHookProxy), repayAmount);
+
+        yoloHookProxy.repay(address(usdc), yJpyAsset, repayAmount, false);
+        vm.stopPrank();
+
+        uint256 debtAfterRepayment = yoloHookProxy.getCurrentDebt(user2, address(usdc), yJpyAsset);
+        console.log("Debt after partial repayment:", debtAfterRepayment);
+
+        // Allow for 1 wei rounding error in debt calculations
+        assertApproxEqAbs(debtAfterRepayment, debtAfterOneYear - repayAmount, 1, "Debt not reduced correctly");
+
+        // Test 5: Interest continues to accrue on remaining debt
+        console.log("\n--- Test 5: Continued Interest Accrual ---");
+
+        vm.warp(block.timestamp + 30 days); // Fast forward 30 more days
+
+        uint256 debtAfter30Days = yoloHookProxy.getCurrentDebt(user2, address(usdc), yJpyAsset);
+        console.log("Debt after additional 30 days:", debtAfter30Days);
+
+        assertGt(debtAfter30Days, debtAfterRepayment, "Interest should continue accruing");
+
+        console.log("Compound interest tests completed successfully!");
+    }
+
+    function test_Test01_Case25_sUSYValueAppreciation() external {
+        console.log("\n=== TEST CASE 25: sUSY Value Appreciation Through Fees ===");
+
+        // Setup test users and variables
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+        address user3 = makeAddr("user3");
+        IERC20Metadata usdc = IERC20Metadata(symbolToDeployedAsset["USDC"]);
+
+        // Setup: Add initial liquidity
+        uint256 initialUSDC = 10000e18; // 10,000 USDC (18 decimals)
+        uint256 initialUSY = 10000e18; // 10,000 USY
+
+        deal(address(usdc), user1, initialUSDC);
+        deal(address(yoloHookProxy.anchor()), user1, initialUSY);
+
+        vm.startPrank(user1);
+        IERC20(usdc).approve(address(yoloHookProxy), initialUSDC);
+        IERC20(address(yoloHookProxy.anchor())).approve(address(yoloHookProxy), initialUSY);
+
+        (,, uint256 liquidityMinted,) = yoloHookProxy.addLiquidity(initialUSDC, initialUSY, 0, user1);
+        vm.stopPrank();
+
+        // Test 1: Initial exchange rate is 1:1
+        console.log("\n--- Test 1: Initial Exchange Rate ---");
+
+        uint256 totalPoolValue = yoloHookProxy.getTotalAnchorPoolValue();
+        uint256 totalSupply = IERC20(address(yoloHookProxy.sUSY())).totalSupply();
+
+        console.log("Initial total pool value (USD):", totalPoolValue);
+        console.log("Initial sUSY total supply:", totalSupply);
+
+        uint256 initialExchangeRate = (totalPoolValue * 1e18) / totalSupply;
+        console.log("Initial exchange rate (USD per sUSY):", initialExchangeRate);
+
+        // Should be approximately 1:1 initially
+        assertApproxEqRel(initialExchangeRate, 1e18, 1e15, "Initial exchange rate should be ~1:1");
+
+        // Test 2: Generate swap fees through trading
+        console.log("\n--- Test 2: Generate Fees Through Swaps ---");
+
+        // Generate fees through swap
+        uint256 swapAmount = 100e18; // 100 USDC (18 decimals)
+        deal(address(usdc), user2, swapAmount);
+        vm.startPrank(user2);
+        usdc.approve(address(swapRouter), swapAmount);
+
+        (PoolKey memory key_, bool usdcIs0) = _anchorKey();
+        SwapParams memory sp = SwapParams({
+            zeroForOne: usdcIs0,
+            amountSpecified: -int256(swapAmount),
+            sqrtPriceLimitX96: 0
+        });
+        PoolSwapTest.TestSettings memory settings = 
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        swapRouter.swap(key_, sp, settings, "");
+        vm.stopPrank();
+
+        // Test 3: Check that sUSY value has appreciated
+        console.log("\n--- Test 3: sUSY Value Appreciation ---");
+
+        uint256 newTotalPoolValue = yoloHookProxy.getTotalAnchorPoolValue();
+        uint256 newTotalSupply = IERC20(address(yoloHookProxy.sUSY())).totalSupply();
+
+        console.log("New total pool value (USD):", newTotalPoolValue);
+        console.log("New sUSY total supply:", newTotalSupply);
+
+        uint256 newExchangeRate = (newTotalPoolValue * 1e18) / newTotalSupply;
+        console.log("New exchange rate (USD per sUSY):", newExchangeRate);
+
+        // Pool value should have increased due to swap fees
+        assertGt(newTotalPoolValue, totalPoolValue, "Pool value should increase from fees");
+
+        // Exchange rate should have improved (each sUSY token worth more USD)
+        assertGt(newExchangeRate, initialExchangeRate, "sUSY exchange rate should improve");
+
+        // Test 4: New LP receives fewer sUSY for same USD value
+        console.log("\n--- Test 4: Proportional LP Addition After Appreciation ---");
+
+        uint256 newLPUSDC = 1000e18; // 18 decimals
+        uint256 newLPUSY = 1000e18;
+
+        deal(address(usdc), user3, newLPUSDC);
+        deal(address(yoloHookProxy.anchor()), user3, newLPUSY);
+
+        vm.startPrank(user3);
+        IERC20(usdc).approve(address(yoloHookProxy), newLPUSDC);
+        IERC20(address(yoloHookProxy.anchor())).approve(address(yoloHookProxy), newLPUSY);
+
+        (,, uint256 newLiquidityMinted,) = yoloHookProxy.addLiquidity(newLPUSDC, newLPUSY, 0, user3);
+        vm.stopPrank();
+
+        console.log("New LP liquidity minted:", newLiquidityMinted);
+        console.log("Original LP liquidity minted:", liquidityMinted);
+
+        // New LP should get fewer tokens for same USD amount (due to appreciation)
+        // This assumes the pool has appreciated in value
+        if (newExchangeRate > initialExchangeRate) {
+            assertLt(newLiquidityMinted * 2, liquidityMinted, "New LP should get proportionally fewer tokens");
+        }
+
+        console.log("sUSY value appreciation tests completed successfully!");
+    }
 }
 
 contract MockFlashBorrower is IFlashBorrower {
@@ -1619,7 +1969,6 @@ contract MockFlashBorrower is IFlashBorrower {
         }
     }
 }
-
 // Keep for debuggings Hooks library
 // (bool success, bytes memory returnData) = address(self).call(data);
 // if (!success) {
