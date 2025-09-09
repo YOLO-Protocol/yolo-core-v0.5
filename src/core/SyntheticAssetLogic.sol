@@ -31,7 +31,13 @@ contract SyntheticAssetLogic is YoloStorage {
      * @return Result rounded up
      */
     function divUp(uint256 a, uint256 b) internal pure returns (uint256) {
-        return (a + b - 1) / b;
+        require(b != 0, "Division by zero");
+        if (a == 0) return 0;
+        
+        // Safe ceiling division: (a + b - 1) / b = a / b + (a % b != 0 ? 1 : 0)
+        // This avoids potential overflow from a + b - 1
+        uint256 quotient = a / b;
+        return a % b == 0 ? quotient : quotient + 1;
     }
 
     /**
@@ -250,17 +256,22 @@ contract SyntheticAssetLogic is YoloStorage {
         // Update global index and check liquidation conditions
         _updateGlobalLiquidityIndex(cfg, pos.storedInterestRate);
 
-        // Check if position is expired (immediate liquidation allowed)
+        // Check if position is expired and current solvency status
         bool isExpired = cfg.isExpirable && pos.expiryTimestamp > 0 && block.timestamp >= pos.expiryTimestamp;
+        bool isSolvent = _isSolvent(pos, _collateral, _yoloAsset, cfg.ltv);
 
-        if (!isExpired) {
-            // Normal solvency check for non-expired positions
-            if (_isSolvent(pos, _collateral, _yoloAsset, cfg.ltv)) revert YoloHook__Solvent();
+        // Liquidation conditions:
+        // 1. Non-expired positions: Only liquidate if insolvent
+        // 2. Expired positions: Can liquidate even if solvent, but still need basic position validation
+        if (!isExpired && isSolvent) {
+            revert YoloHook__Solvent();
         }
-        // If expired, skip solvency check - immediate liquidation allowed
-
-        // Calculate actual debt for repayment validation (round UP for user obligations)
+        
+        // Calculate actual debt for validation and repayment (round UP for user obligations)
         uint256 actualDebt = divUp(pos.normalizedDebtRay * cfg.liquidityIndexRay, RAY);
+        if (actualDebt == 0) {
+            revert YoloHook__NoDebt();
+        }
         uint256 actualRepayAmount = _repayAmount == 0 ? actualDebt : _repayAmount;
         if (actualRepayAmount > actualDebt) revert YoloHook__RepayExceedsDebt();
 

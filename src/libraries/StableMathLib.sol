@@ -17,10 +17,22 @@ library StableMathLib {
 
     function getK(uint256 x_18d, uint256 y_18d) public pure returns (uint256 k_18d) {
         if (x_18d == 0 || y_18d == 0) return 0;
+        
+        // Overflow protection: Check before multiplications
+        if (x_18d > type(uint256).max / y_18d) revert StableMathLib__MathOverflow();
+        if (x_18d > type(uint256).max / x_18d) revert StableMathLib__MathOverflow();
+        if (y_18d > type(uint256).max / y_18d) revert StableMathLib__MathOverflow();
+        
         uint256 xy_P = (x_18d * y_18d) / MATH_PRECISION;
         uint256 x_sq_P = (x_18d * x_18d) / MATH_PRECISION;
         uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
-        k_18d = (xy_P * (x_sq_P + y_sq_P)) / MATH_PRECISION;
+        
+        // Check for addition overflow and final multiplication
+        if (x_sq_P > type(uint256).max - y_sq_P) revert StableMathLib__MathOverflow();
+        uint256 sum = x_sq_P + y_sq_P;
+        if (xy_P > type(uint256).max / sum) revert StableMathLib__MathOverflow();
+        
+        k_18d = (xy_P * sum) / MATH_PRECISION;
         return k_18d;
     }
 
@@ -36,16 +48,28 @@ library StableMathLib {
     }
 
     function d(uint256 x0_18d, uint256 y_18d) public pure returns (uint256) {
-        uint256 x0_cubed_P2 = (((x0_18d * x0_18d) / MATH_PRECISION) * x0_18d) / MATH_PRECISION;
+        // Overflow protection BEFORE operations
+        if (x0_18d > type(uint256).max / x0_18d) revert StableMathLib__MathOverflow();
+        if (y_18d > type(uint256).max / y_18d) revert StableMathLib__MathOverflow();
+        
+        uint256 x0_sq_P = (x0_18d * x0_18d) / MATH_PRECISION;
+        if (x0_sq_P > type(uint256).max / x0_18d) revert StableMathLib__MathOverflow();
+        uint256 x0_cubed_P2 = (x0_sq_P * x0_18d) / MATH_PRECISION;
 
         uint256 y_sq_P = (y_18d * y_18d) / MATH_PRECISION;
+        
+        // Check overflow BEFORE multiplication
+        if (x0_18d > type(uint256).max / y_sq_P) revert StableMathLib__MathOverflow();
         uint256 x0_y_sq_P2 = (x0_18d * y_sq_P) / MATH_PRECISION;
 
+        // Now check for the final multiplication by 3
         if (x0_y_sq_P2 > type(uint256).max / 3) {
             revert StableMathLib__MathOverflow();
         }
         uint256 term2_3x = 3 * x0_y_sq_P2;
 
+        // Check addition overflow
+        if (x0_cubed_P2 > type(uint256).max - term2_3x) revert StableMathLib__MathOverflow();
         uint256 derivative = x0_cubed_P2 + term2_3x;
         if (derivative == 0) revert StableMathLib__StableswapConvergenceError();
         return derivative;
